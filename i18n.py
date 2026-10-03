@@ -16,12 +16,13 @@ from __future__ import annotations
 
 import os
 
-LANGS = ("en", "zh", "ja", "ru")
+LANGS = ("en", "zh", "ja", "ru", "tr")
 LANG_CHIPS = (
     ("zh", "中"),
     ("en", "EN"),
     ("ja", "日"),
     ("ru", "РУ"),
+    ("tr", "TÜ"),
 )
 
 _STRINGS: dict[str, dict[str, str]] = {
@@ -208,6 +209,52 @@ _STRINGS: dict[str, dict[str, str]] = {
         "info_cpu": "ЦП",
         "info_ram": "ОЗУ",
         "info_disk": "ДИСК",
+    },
+    "tr": {
+        "term_too_small": "Lütfen terminali büyütün (en az 60x16)",
+        "device": "Cihaz",
+        "pick_device": "Cihaz seçin",
+        "jobs": "İşler",
+        "clean": "Temiz derleme",
+        "clean_none": "Yok",
+        "clean_install": "installclean",
+        "clean_full": "make clean",
+        "build_now": "ŞİMDİ DERLE!",
+        "hint": "tıkla  ·  tab  ·  q",
+        "on": "AÇIK",
+        "off": "KAPALI",
+        "picker_title": "Cihaz seç",
+        "picker_hint": "Bir öğeye tıklayın, Esc ile iptal",
+        "picker_keys": "↑↓  ·  enter",
+        "building": "Derleniyor",
+        "done": "Bitti",
+        "stopped": "Durduruldu",
+        "build_ok": "Derleme tamamlandı",
+        "build_fail": "Derleme başarısız  exit={code}",
+        "stop": "DURDUR",
+        "back": "GERİ",
+        "no_devices": "Derlenebilir cihaz bulunamadı",
+        "need_device": "Önce bir cihaz seçin",
+        "stopping": "Önceki derleme durduruluyor…",
+        "stopped_build": "Derleme durduruldu",
+        "tui_failed": "TUI başlatılamadı: {exc}. Arayüz olmadan derlemek için --device kullanın.",
+        "cli_desc": "Miku UI derleme yardımcısı. Argümansız TUI açar; --device bu terminalde derler.",
+        "cli_device": "cihaz, örn. zeekr / miku_zeekr",
+        "cli_gapps": "export MIKU_GAPPS=true",
+        "cli_jobs": "make -jN (varsayılan: CPU sayısı)",
+        "cli_ccache": "ccache'i etkinleştir (varsayılan açık; --no-ccache kapatır)",
+        "cli_clean": "derlemeden önce make clean çalıştır",
+        "cli_installclean": "derlemeden önce make installclean çalıştır",
+        "cli_release": "lunch release (vendor/miku'dan, genelde cp2a)",
+        "cli_variant": "lunch variant (varsayılan userdebug)",
+        "cli_jobs_err": "--jobs 1 veya daha büyük olmalı",
+        "cli_no_tty": "TUI için bir terminal gerekir. Arayüzsüz derlemek için --device kullanın.",
+        "cli_building": "{label} derleniyor: {combo} -j{jobs}{extra}",
+        "info_rom": "ROM",
+        "info_os": "Sistem",
+        "info_cpu": "CPU",
+        "info_ram": "Bellek",
+        "info_disk": "Disk",
     },
 }
 
