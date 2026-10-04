@@ -423,7 +423,9 @@ class BuildTui:
         self.status_key = ""
         self.status_args: dict[str, object] = {}
         self.lang = detect_lang()
-        self._last_click = (0.0, -1, -1)
+        self._btn_down = False
+        self._btn_hit: tuple[str, object] | None = None
+        self._click_guard: tuple[float, str, object] = (0.0, "", None)
         self._stdscr: curses.window | None = None
         self._log_geom = Rect(0, 0, 0, 0)
         self._wrapped: list[list[Cell]] = []
@@ -881,15 +883,37 @@ class BuildTui:
                     fill_attr |= curses.A_REVERSE
                     _add(stdscr, y + i, x + col, " " * (w - col), fill_attr, w - col)
 
+    def _hit_at(self, y: int, x: int) -> Hit | None:
+        for hit in reversed(self.hits):
+            if hit.rect.contains(y, x):
+                return hit
+        return None
+
+    def _cancel_press(self) -> None:
+        self._btn_down = False
+        self._btn_hit = None
+
+    def _fire_click(self, action: str, payload: object) -> None:
+        now = time.time()
+        last_t, last_a, last_p = self._click_guard
+        if now - last_t < 0.2 and last_a == action and last_p == payload:
+            return
+        self._click_guard = (now, action, payload)
+        self._sel_a = None
+        self._sel_b = None
+        self._action(action, payload)
+
     def _mouse(self) -> None:
         try:
             _id, mx, my, _z, bstate = curses.getmouse()
         except curses.error:
             return
         if bstate & _WHEEL_UP:
+            self._cancel_press()
             self._wheel(-3)
             return
         if bstate & _WHEEL_DOWN:
+            self._cancel_press()
             self._wheel(3)
             return
         pressed = bool(bstate & curses.BUTTON1_PRESSED)
@@ -902,7 +926,7 @@ class BuildTui:
             if pos is not None:
                 self._sel_b = pos
             return
-        if pressed and in_log:
+        if pressed and in_log and not self._btn_down:
             pos = self._log_pos(my, mx, clamp=False)
             if pos is not None:
                 self._selecting = True
@@ -915,22 +939,39 @@ class BuildTui:
                 self._sel_b = pos
             self._copy_selection()
             self._selecting = False
+            self._cancel_press()
             return
-        if not (clicked or released or pressed):
-            return
-        now = time.time()
-        last_t, last_y, last_x = self._last_click
-        if now - last_t < 0.12 and last_y == my and last_x == mx:
-            return
-        self._last_click = (now, my, mx)
         if in_log:
+            if released:
+                self._cancel_press()
             return
-        self._sel_a = None
-        self._sel_b = None
-        for hit in reversed(self.hits):
-            if hit.rect.contains(my, mx):
-                self._action(hit.action, hit.payload)
+        # mouseinterval(0) reports press and release separately so log drag
+        # works; UI hits must wait for release over the same control.
+        if pressed:
+            if not self._btn_down:
+                hit = self._hit_at(my, mx)
+                self._btn_down = True
+                self._btn_hit = (hit.action, hit.payload) if hit else None
+            return
+        if report:
+            return
+        if released:
+            armed = self._btn_down
+            press_hit = self._btn_hit
+            self._cancel_press()
+            hit = self._hit_at(my, mx)
+            if hit is None:
                 return
+            if armed and press_hit != (hit.action, hit.payload):
+                return
+            self._fire_click(hit.action, hit.payload)
+            return
+        if clicked:
+            if self._btn_down:
+                return
+            hit = self._hit_at(my, mx)
+            if hit is not None:
+                self._fire_click(hit.action, hit.payload)
 
     def _wheel(self, delta: int) -> None:
         if self.mode == MODE_PICKER:
@@ -991,6 +1032,7 @@ class BuildTui:
             _copy_to_clipboard(copied)
 
     def _key(self, ch: int) -> bool:
+        self._cancel_press()
         if ch in (3,):
             if self.mode == MODE_BUILD:
                 self._action("stop_or_back")
