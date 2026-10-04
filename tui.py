@@ -44,8 +44,21 @@ CLEAN_INSTALL = "installclean"
 CLEAN_FULL = "clean"
 
 _FOCUS = ("device", "jobs", "gapps", "ccache", "clean", "build")
+_CYCLE_PREV = (curses.KEY_LEFT,)
+_CYCLE_NEXT = (curses.KEY_RIGHT, ord(" "), curses.KEY_ENTER, 10, 13)
 _WHEEL_UP = getattr(curses, "BUTTON4_PRESSED", 0x10000)
 _WHEEL_DOWN = getattr(curses, "BUTTON5_PRESSED", 0x200000)
+
+
+def _cycle(values: tuple, current, ch: int):
+    if ch not in _CYCLE_PREV and ch not in _CYCLE_NEXT:
+        return current
+    n = len(values)
+    if n == 0:
+        return current
+    idx = values.index(current) if current in values else 0
+    step = -1 if ch in _CYCLE_PREV else 1
+    return values[(idx + step) % n]
 
 
 @dataclass
@@ -590,7 +603,7 @@ class BuildTui:
         if row < limit:
             device_label = self.selected.label if self.selected else self._t("pick_device")
             self._box_btn(
-                stdscr, row, xx, inner, f"{device_label}   ▾", "device", None, self.focus == 0
+                stdscr, row, xx, inner, f"{device_label}   ▾", "device", None, self._has_focus("device")
             )
             row += 2
         if row < limit:
@@ -599,17 +612,28 @@ class BuildTui:
         if row < limit:
             self._jobs_row(stdscr, row, xx, inner)
             row += 2
-        if row < limit:
-            self._toggle_row(stdscr, row, xx, inner, "GAPPS", self.gapps, "gapps", 2)
-            row += 1
-        if row < limit:
-            self._toggle_row(stdscr, row, xx, inner, "CCACHE", self.ccache, "ccache", 3)
-            row += 2
-        if row < limit:
-            _add(stdscr, row, xx, self._t("clean"), curses.color_pair(15) | curses.A_DIM, inner)
-            row += 1
-        if row < limit:
-            self._clean_row(stdscr, row, xx, inner)
+        row = self._option_block(
+            stdscr, row, xx, inner, limit, self._t("gapps"), self._yes_no(), self.gapps, "gapps"
+        )
+        row = self._option_block(
+            stdscr, row, xx, inner, limit, self._t("ccache"), self._yes_no(), self.ccache, "ccache"
+        )
+        self._option_block(
+            stdscr,
+            row,
+            xx,
+            inner,
+            limit,
+            self._t("clean"),
+            (
+                (CLEAN_NONE, self._t("clean_none")),
+                (CLEAN_INSTALL, self._t("clean_install")),
+                (CLEAN_FULL, self._t("clean_full")),
+            ),
+            self.clean,
+            "clean",
+            gap=0,
+        )
         if self.status_key:
             _add(stdscr, y + h - 6, xx, self._t(self.status_key, **self.status_args), curses.color_pair(6), inner)
         ready = self.selected is not None
@@ -621,13 +645,25 @@ class BuildTui:
         attr = curses.color_pair(3) | curses.A_BOLD
         if not ready:
             attr = curses.color_pair(10)
-        elif self.focus == 5:
+        elif self._has_focus("build"):
             attr = curses.color_pair(3) | curses.A_BOLD
         self._fill_btn(stdscr, btn_y, btn_x, btn_h, btn_w, build_label, attr, "build")
         self._draw_lang_bar(stdscr, y + h - 2, xx, inner)
 
+    def _has_focus(self, name: str) -> bool:
+        return 0 <= self.focus < len(_FOCUS) and _FOCUS[self.focus] == name
+
+    def _set_focus(self, name: str) -> None:
+        try:
+            self.focus = _FOCUS.index(name)
+        except ValueError:
+            return
+
+    def _yes_no(self) -> tuple[tuple[bool, str], tuple[bool, str]]:
+        return ((True, self._t("yes")), (False, self._t("no")))
+
     def _jobs_row(self, stdscr: curses.window, y: int, x: int, width: int) -> None:
-        focused = self.focus == 1
+        focused = self._has_focus("jobs")
         minus_a = curses.color_pair(3) if focused else curses.color_pair(12)
         plus_a = minus_a
         _add(stdscr, y, x, "  −  ", minus_a | curses.A_BOLD, 5)
@@ -638,47 +674,48 @@ class BuildTui:
         _add(stdscr, y, x + 12, "  +  ", plus_a | curses.A_BOLD, 5)
         self.hits.append(Hit(Rect(y, x + 12, 1, 5), "jobs", 1))
 
-    def _toggle_row(
+    def _option_block(
+        self,
+        stdscr: curses.window,
+        row: int,
+        x: int,
+        width: int,
+        limit: int,
+        title: str,
+        options: tuple[tuple[object, str], ...],
+        current: object,
+        action: str,
+        gap: int = 1,
+    ) -> int:
+        """Dim title plus a chip row. Returns the next row after optional gap."""
+        if row < limit:
+            _add(stdscr, row, x, title, curses.color_pair(15) | curses.A_DIM, width)
+            row += 1
+        if row < limit:
+            self._chip_row(stdscr, row, x, width, options, current, action)
+            row += 1
+        return row + gap
+
+    def _chip_row(
         self,
         stdscr: curses.window,
         y: int,
         x: int,
         width: int,
-        label: str,
-        on: bool,
+        options: tuple[tuple[object, str], ...],
+        current: object,
         action: str,
-        focus_i: int,
     ) -> None:
-        mark = "●" if on else "○"
-        name_attr = curses.color_pair(2)
-        mark_attr = curses.color_pair(11) | curses.A_BOLD if on else curses.color_pair(10)
-        if self.focus == focus_i:
-            name_attr = curses.color_pair(3) | curses.A_BOLD
-            mark_attr = name_attr
-        name = f"  {label:<8}"
-        _add(stdscr, y, x, name, name_attr, dw(name))
-        _add(stdscr, y, x + dw(name), mark, mark_attr, dw(mark))
-        self.hits.append(Hit(Rect(y, x, 1, min(width, dw(name) + dw(mark))), action))
-
-    def _clean_row(self, stdscr: curses.window, y: int, x: int, width: int) -> None:
-        options = (
-            (CLEAN_NONE, self._t("clean_none")),
-            (CLEAN_INSTALL, self._t("clean_install")),
-            (CLEAN_FULL, self._t("clean_full")),
-        )
         cx = x
-        focused = self.focus == 4
         for value, label in options:
-            chosen = self.clean == value
+            chosen = current == value
             text = f" {label} "
             attr = curses.color_pair(3) | curses.A_BOLD if chosen else curses.color_pair(10)
-            if focused and chosen:
-                attr = curses.color_pair(3) | curses.A_BOLD
             w = dw(text)
             if cx + w - x > width:
                 break
             _add(stdscr, y, cx, text, attr, w)
-            self.hits.append(Hit(Rect(y, cx, 1, w), "clean", value))
+            self.hits.append(Hit(Rect(y, cx, 1, w), action, value))
             cx += w + 1
 
     def _box_btn(
@@ -987,17 +1024,12 @@ class BuildTui:
             elif ord("0") <= ch <= ord("9"):
                 value = self.jobs * 10 + (ch - ord("0"))
                 self.jobs = min(256, value)
-        elif name == "gapps" and ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
-            self.gapps = not self.gapps
-        elif name == "ccache" and ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
-            self.ccache = not self.ccache
+        elif name == "gapps":
+            self.gapps = _cycle((True, False), self.gapps, ch)
+        elif name == "ccache":
+            self.ccache = _cycle((True, False), self.ccache, ch)
         elif name == "clean":
-            order = (CLEAN_NONE, CLEAN_INSTALL, CLEAN_FULL)
-            idx = order.index(self.clean) if self.clean in order else 0
-            if ch in (curses.KEY_LEFT,):
-                self.clean = order[(idx - 1) % 3]
-            elif ch in (curses.KEY_RIGHT, ord(" "), curses.KEY_ENTER, 10, 13):
-                self.clean = order[(idx + 1) % 3]
+            self.clean = _cycle((CLEAN_NONE, CLEAN_INSTALL, CLEAN_FULL), self.clean, ch)
         elif name == "build" and ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
             self._start_build()
         return False
@@ -1037,26 +1069,28 @@ class BuildTui:
 
     def _action(self, action: str, payload: object = None) -> None:
         if action == "device":
-            self.focus = 0
+            self._set_focus("device")
             self._open_picker()
         elif action == "jobs":
-            self.focus = 1
+            self._set_focus("jobs")
             delta = int(payload or 0)
             self.jobs = min(256, max(1, self.jobs + delta))
         elif action == "focus" and payload == "jobs":
-            self.focus = 1
+            self._set_focus("jobs")
         elif action == "gapps":
-            self.focus = 2
-            self.gapps = not self.gapps
+            self._set_focus("gapps")
+            if isinstance(payload, bool):
+                self.gapps = payload
         elif action == "ccache":
-            self.focus = 3
-            self.ccache = not self.ccache
+            self._set_focus("ccache")
+            if isinstance(payload, bool):
+                self.ccache = payload
         elif action == "clean":
-            self.focus = 4
+            self._set_focus("clean")
             if isinstance(payload, str):
                 self.clean = payload
         elif action == "build":
-            self.focus = 5
+            self._set_focus("build")
             self._start_build()
         elif action == "pick" and isinstance(payload, int):
             if 0 <= payload < len(self.products):
