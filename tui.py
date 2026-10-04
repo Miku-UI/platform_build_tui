@@ -32,6 +32,7 @@ from art import SPARKS, banner_lines, logo_lines
 from builder import BuildConfig, BuildSession
 from devices import Product
 from i18n import LANG_CHIPS, detect_lang, t
+from phase import PhaseTracker
 from sysinfo import HostMonitor, fmt_freq, fmt_pair
 
 MODE_CONFIG = "config"
@@ -44,6 +45,12 @@ CLEAN_INSTALL = "installclean"
 CLEAN_FULL = "clean"
 
 VARIANTS = ("user", "userdebug", "eng")
+VOICE_MOE = "moe"
+VOICE_PRO = "pro"
+VOICE_CHIPS = (
+    (VOICE_MOE, "Moe Mode"),
+    (VOICE_PRO, "Pro Mode"),
+)
 
 _FOCUS = ("device", "variant", "jobs", "gapps", "ccache", "clean", "build")
 _CYCLE_PREV = (curses.KEY_LEFT,)
@@ -418,6 +425,7 @@ class BuildTui:
         self.picker_index = 0
         self.picker_off = 0
         self.log = LogBuffer()
+        self.phase = PhaseTracker()
         self.log_scroll = 0
         self.session: BuildSession | None = None
         self._stopping: BuildSession | None = None
@@ -425,6 +433,7 @@ class BuildTui:
         self.status_key = ""
         self.status_args: dict[str, object] = {}
         self.lang = detect_lang()
+        self.voice = VOICE_PRO
         self._btn_down = False
         self._btn_hit: tuple[str, object] | None = None
         self._click_guard: tuple[float, str, object] = (0.0, "", None)
@@ -663,7 +672,7 @@ class BuildTui:
         elif self._has_focus("build"):
             attr = curses.color_pair(3) | curses.A_BOLD
         self._fill_btn(stdscr, btn_y, btn_x, btn_h, btn_w, build_label, attr, "build")
-        self._draw_lang_bar(stdscr, y + h - 2, xx, inner)
+        self._draw_lang_bar(stdscr, y + h - 2, xx, inner, voices=True)
 
     def _has_focus(self, name: str) -> bool:
         return 0 <= self.focus < len(_FOCUS) and _FOCUS[self.focus] == name
@@ -676,6 +685,12 @@ class BuildTui:
 
     def _yes_no(self) -> tuple[tuple[bool, str], tuple[bool, str]]:
         return ((True, self._t("yes")), (False, self._t("no")))
+
+    def _phase_title(self) -> str:
+        key, args = self.phase.snapshot()
+        if self.voice == VOICE_MOE:
+            key = "moe_" + key
+        return self._t(key, **args)
 
     def _jobs_row(self, stdscr: curses.window, y: int, x: int, width: int) -> None:
         focused = self._has_focus("jobs")
@@ -776,9 +791,21 @@ class BuildTui:
         y: int,
         x: int,
         width: int,
-        hint: str | None = None,
+        voices: bool = False,
     ) -> None:
-        hint = self._t("hint") if hint is None else hint
+        left = x
+        if voices:
+            cx = x
+            for code, label in VOICE_CHIPS:
+                text = f" {label} "
+                w = dw(text)
+                if cx + w - x > width:
+                    break
+                attr = curses.color_pair(3) | curses.A_BOLD if code == self.voice else curses.color_pair(10)
+                _add(stdscr, y, cx, text, attr, w)
+                self.hits.append(Hit(Rect(y, cx, 1, w), "voice", code))
+                cx += w + 1
+            left = cx
         chips: list[tuple[str, str, int]] = []
         chip_span = 0
         for code, label in LANG_CHIPS:
@@ -788,9 +815,11 @@ class BuildTui:
             chip_span += w + 1
         chip_span = max(0, chip_span - 1)
         cx = x + max(0, width - chip_span)
-        if dw(hint) + 1 <= max(0, cx - x):
-            _add(stdscr, y, x, hint, curses.color_pair(10), max(1, cx - x - 1))
+        if voices and left > x:
+            cx = max(cx, left + 1)
         for code, text, w in chips:
+            if cx + w - x > width:
+                break
             selected = code == self.lang
             attr = curses.color_pair(3) | curses.A_BOLD if selected else curses.color_pair(10)
             _add(stdscr, y, cx, text, attr, w)
@@ -818,7 +847,7 @@ class BuildTui:
             prefix = "▸ " if selected else "  "
             _add(stdscr, list_y + i, xx, clip(prefix + product.label, inner), attr, inner)
             self.hits.append(Hit(Rect(list_y + i, xx, 1, inner), "pick", idx))
-        self._draw_lang_bar(stdscr, y + h - 2, xx, inner, self._t("picker_keys"))
+        self._draw_lang_bar(stdscr, y + h - 2, xx, inner)
 
     def _draw_build(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         session = self.session
@@ -828,9 +857,11 @@ class BuildTui:
             end = session.finished_at or time.time()
             elapsed = "  " + _fmt_elapsed(end - session.started_at)
         if self.mode == MODE_BUILD:
-            title = self._t("building")
+            title = self._phase_title()
         else:
             title = self._t(self.status_key, **self.status_args) if self.status_key else self._t("done")
+        room = max(0, w - 4 - dw(elapsed))
+        title = clip(title, room)
         _rounded_frame(stdscr, y, x, h, w, curses.color_pair(12), f"✦  {title}{elapsed}")
         inner = max(10, w - 4)
         xx = x + 2
@@ -1164,6 +1195,8 @@ class BuildTui:
                 self._stop_build()
             elif self.mode == MODE_DONE:
                 self.mode = MODE_CONFIG
+        elif action == "voice" and isinstance(payload, str) and payload in {c for c, _n in VOICE_CHIPS}:
+            self.voice = payload
         elif action == "lang" and isinstance(payload, str) and payload in {c for c, _n in LANG_CHIPS}:
             self.lang = payload
         elif action == "log":
@@ -1189,7 +1222,9 @@ class BuildTui:
             self._set_status("stopping")
             return
         log = LogBuffer()
+        phase = PhaseTracker()
         self.log = log
+        self.phase = phase
         self.log_scroll = 0
         self._wrapped = []
         self._wrap_key = None
@@ -1207,8 +1242,9 @@ class BuildTui:
             variant=self.variant,
         )
 
-        def on_data(text: str, buf: LogBuffer = log) -> None:
+        def on_data(text: str, buf: LogBuffer = log, tracker: PhaseTracker = phase) -> None:
             buf.feed(text)
+            tracker.feed(text)
 
         session = BuildSession(self.top, config, on_data=on_data)
         self.session = session

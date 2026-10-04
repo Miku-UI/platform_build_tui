@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from devices import Product
+from phase import MARKER_PREFIX
 
 MAKE_TARGET = "diva"
 
@@ -84,7 +85,7 @@ class BuildSession:
 
     def start(self) -> None:
         env = _build_env(self.config)
-        script = _build_script(self.top, self.config)
+        script = _build_script(self.top, self.config, markers=not self.inherit_tty)
         argv = ["bash", "-c", script]
         self.started_at = time.time()
         if self.inherit_tty:
@@ -253,19 +254,33 @@ def _build_env(config: BuildConfig) -> dict[str, str]:
     return env
 
 
-def _build_script(top: Path, config: BuildConfig) -> str:
+def _phase_printf(name: str) -> str:
+    return "printf '\\n%s\\n' " + shlex.quote(MARKER_PREFIX + name)
+
+
+def _build_script(top: Path, config: BuildConfig, *, markers: bool = False) -> str:
     jobs = max(1, int(config.jobs))
     lines = [
         "set +u",
         "set -o pipefail",
         f"cd {shlex.quote(str(top))}",
-        "source build/envsetup.sh",
-        f"lunch {shlex.quote(config.lunch_combo)} || exit $?",
     ]
+    if markers:
+        lines.append(_phase_printf("setup"))
+    lines.append("source build/envsetup.sh")
+    if markers:
+        lines.append(_phase_printf("lunch"))
+    lines.append(f"lunch {shlex.quote(config.lunch_combo)} || exit $?")
     if config.clean == "clean":
+        if markers:
+            lines.append(_phase_printf("clean"))
         lines.append("make clean || exit $?")
     elif config.clean == "installclean":
+        if markers:
+            lines.append(_phase_printf("clean"))
         lines.append("make installclean || exit $?")
+    if markers:
+        lines.append(_phase_printf("make"))
     lines.append(f"make {MAKE_TARGET} -j{jobs}")
     lines.append("exit $?")
     return "\n".join(lines) + "\n"
