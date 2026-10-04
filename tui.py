@@ -43,7 +43,9 @@ CLEAN_NONE = "none"
 CLEAN_INSTALL = "installclean"
 CLEAN_FULL = "clean"
 
-_FOCUS = ("device", "jobs", "gapps", "ccache", "clean", "build")
+VARIANTS = ("user", "userdebug", "eng")
+
+_FOCUS = ("device", "variant", "jobs", "gapps", "ccache", "clean", "build")
 _CYCLE_PREV = (curses.KEY_LEFT,)
 _CYCLE_NEXT = (curses.KEY_RIGHT, ord(" "), curses.KEY_ENTER, 10, 13)
 _WHEEL_UP = getattr(curses, "BUTTON4_PRESSED", 0x10000)
@@ -608,6 +610,17 @@ class BuildTui:
                 stdscr, row, xx, inner, f"{device_label}   ▾", "device", None, self._has_focus("device")
             )
             row += 2
+        row = self._option_block(
+            stdscr,
+            row,
+            xx,
+            inner,
+            limit,
+            self._t("variant"),
+            tuple((name, name) for name in VARIANTS),
+            self.variant,
+            "variant",
+        )
         if row < limit:
             _add(stdscr, row, xx, self._t("jobs"), curses.color_pair(15) | curses.A_DIM, inner)
             row += 1
@@ -1056,6 +1069,8 @@ class BuildTui:
         name = _FOCUS[self.focus]
         if name == "device" and ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
             self._open_picker()
+        elif name == "variant":
+            self.variant = _cycle(VARIANTS, self.variant, ch)
         elif name == "jobs":
             if ch in (curses.KEY_LEFT, ord("-")):
                 self.jobs = max(1, self.jobs - 1)
@@ -1113,6 +1128,10 @@ class BuildTui:
         if action == "device":
             self._set_focus("device")
             self._open_picker()
+        elif action == "variant":
+            self._set_focus("variant")
+            if isinstance(payload, str) and payload in VARIANTS:
+                self.variant = payload
         elif action == "jobs":
             self._set_focus("jobs")
             delta = int(payload or 0)
