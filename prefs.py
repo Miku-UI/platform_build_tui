@@ -21,7 +21,8 @@ from pathlib import Path
 
 from i18n import LANGS
 
-PREFS_NAME = ".miku-tui.json"
+TUI_DIR_NAME = ".miku-tui"
+PREFS_NAME = "prefs.json"
 _VARIANTS = frozenset({"user", "userdebug", "eng"})
 _VOICES = frozenset({"moe", "pro"})
 
@@ -37,8 +38,15 @@ class Prefs:
     voice: str | None = None
 
 
+def tui_dir(top: Path, *, create: bool = False) -> Path:
+    path = top / TUI_DIR_NAME
+    if create:
+        path.mkdir(mode=0o700, exist_ok=True)
+    return path
+
+
 def prefs_path(top: Path) -> Path:
-    return top / PREFS_NAME
+    return tui_dir(top) / PREFS_NAME
 
 
 def load_prefs(top: Path) -> Prefs:
@@ -83,6 +91,7 @@ def save_prefs(top: Path, prefs: Prefs) -> None:
         data["lang"] = prefs.lang
     if prefs.voice in _VOICES:
         data["voice"] = prefs.voice
+    tui_dir(top, create=True)
     path = prefs_path(top)
     tmp = path.with_name(path.name + ".tmp")
     text = json.dumps(data, indent=2, sort_keys=True) + "\n"

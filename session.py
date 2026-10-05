@@ -29,17 +29,24 @@ import traceback
 from pathlib import Path
 from typing import Callable
 
-SOCK_NAME = ".miku-tui.sock"
-LOCK_NAME = ".miku-tui.lock"
+from prefs import tui_dir
+
+SOCK_NAME = "session.sock"
+LOCK_NAME = "session.lock"
+LOG_NAME = "daemon.log"
 _TIOCSCTTY = getattr(termios, "TIOCSCTTY", 0x540E)
 
 
 def sock_path(top: Path) -> Path:
-    return top / SOCK_NAME
+    return tui_dir(top) / SOCK_NAME
 
 
 def lock_path(top: Path) -> Path:
-    return top / LOCK_NAME
+    return tui_dir(top) / LOCK_NAME
+
+
+def log_path(top: Path) -> Path:
+    return tui_dir(top) / LOG_NAME
 
 
 def launch(top: Path, make_app: Callable) -> int:
@@ -51,6 +58,7 @@ def launch(top: Path, make_app: Callable) -> int:
     if pid == 0:
         signal.signal(signal.SIGCHLD, signal.SIG_DFL)
         _daemonize(top)
+        tui_dir(top, create=True)
         lock_fd = _try_lock(lock_path(top))
         if lock_fd is None:
             os._exit(0)
@@ -60,7 +68,7 @@ def launch(top: Path, make_app: Callable) -> int:
             app.run_daemon(listen)
         except Exception:
             try:
-                Path(top, ".miku-tui.log").write_text(traceback.format_exc(), encoding="utf-8")
+                log_path(top).write_text(traceback.format_exc(), encoding="utf-8")
             except OSError:
                 pass
             os._exit(1)
