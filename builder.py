@@ -45,6 +45,7 @@ class BuildConfig:
     clean: str
     release: str
     variant: str = "userdebug"
+    keep_going: bool = False
 
     @property
     def lunch_combo(self) -> str:
@@ -281,7 +282,8 @@ def _build_script(top: Path, config: BuildConfig, *, markers: bool = False) -> s
         lines.append("make installclean || exit $?")
     if markers:
         lines.append(_phase_printf("make"))
-    lines.append(f"make {MAKE_TARGET} -j{jobs}")
+    keep = " -k 0" if config.keep_going else ""
+    lines.append(f"make {MAKE_TARGET} -j{jobs}{keep}")
     lines.append("exit $?")
     return "\n".join(lines) + "\n"
 

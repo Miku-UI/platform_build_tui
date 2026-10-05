@@ -99,7 +99,7 @@ VOICE_CHIPS = (
     (VOICE_PRO, "Pro Mode"),
 )
 
-_FOCUS = ("device", "variant", "jobs", "gapps", "ccache", "clean", "build")
+_FOCUS = ("device", "variant", "jobs", "gapps", "ccache", "keep_going", "clean", "build")
 _CYCLE_PREV = (curses.KEY_LEFT,)
 _CYCLE_NEXT = (curses.KEY_RIGHT, ord(" "), curses.KEY_ENTER, 10, 13)
 _WHEEL_UP = getattr(curses, "BUTTON4_PRESSED", 0x10000)
@@ -529,6 +529,7 @@ class BuildTui:
             self.ccache = prefs.ccache
         else:
             self.ccache = shutil.which("ccache") is not None
+        self.keep_going = prefs.keep_going if prefs.keep_going is not None else False
         self.clean = clean
         self.selected: Product | None = None
         if prefs.device:
@@ -858,6 +859,17 @@ class BuildTui:
         )
         row = self._option_block(
             stdscr, row, xx, inner, limit, self._t("ccache"), self._yes_no(), self.ccache, "ccache"
+        )
+        row = self._option_block(
+            stdscr,
+            row,
+            xx,
+            inner,
+            limit,
+            self._t("keep_going"),
+            self._yes_no(),
+            self.keep_going,
+            "keep_going",
         )
         self._option_block(
             stdscr,
@@ -1519,6 +1531,8 @@ class BuildTui:
             self.gapps = _cycle((True, False), self.gapps, ch)
         elif name == "ccache":
             self.ccache = _cycle((True, False), self.ccache, ch)
+        elif name == "keep_going":
+            self.keep_going = _cycle((True, False), self.keep_going, ch)
         elif name == "clean":
             self.clean = _cycle((CLEAN_NONE, CLEAN_INSTALL, CLEAN_FULL), self.clean, ch)
         elif name == "build" and ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
@@ -1599,6 +1613,10 @@ class BuildTui:
             self._set_focus("ccache")
             if isinstance(payload, bool):
                 self.ccache = payload
+        elif action == "keep_going":
+            self._set_focus("keep_going")
+            if isinstance(payload, bool):
+                self.keep_going = payload
         elif action == "clean":
             self._set_focus("clean")
             if isinstance(payload, str):
@@ -1640,7 +1658,16 @@ class BuildTui:
 
     def _prefs_snapshot(self) -> tuple:
         device = self.selected.product_name if self.selected is not None else None
-        return (device, self.variant, self.jobs, self.gapps, self.ccache, self.lang, self.voice)
+        return (
+            device,
+            self.variant,
+            self.jobs,
+            self.gapps,
+            self.ccache,
+            self.keep_going,
+            self.lang,
+            self.voice,
+        )
 
     def _persist_if_changed(self, before: tuple) -> None:
         if self._prefs_snapshot() != before:
@@ -1655,6 +1682,7 @@ class BuildTui:
                 jobs=self.jobs,
                 gapps=self.gapps,
                 ccache=self.ccache,
+                keep_going=self.keep_going,
                 lang=self.lang,
                 voice=self.voice,
             ),
@@ -1697,6 +1725,7 @@ class BuildTui:
             jobs=self.jobs,
             gapps=self.gapps,
             ccache=self.ccache,
+            keep_going=self.keep_going,
             clean=self.clean,
             release=self.release,
             variant=self.variant,
@@ -1731,6 +1760,8 @@ class BuildTui:
             extras.append("GAPPS")
         if self.ccache:
             extras.append("ccache")
+        if self.keep_going:
+            extras.append("-k 0")
         if self.clean != CLEAN_NONE:
             extras.append(self.clean)
         extra = ("  " + " ".join(extras)) if extras else ""

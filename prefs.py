@@ -34,6 +34,7 @@ class Prefs:
     jobs: int | None = None
     gapps: bool | None = None
     ccache: bool | None = None
+    keep_going: bool | None = None
     lang: str | None = None
     voice: str | None = None
 
@@ -62,6 +63,7 @@ def load_prefs(top: Path) -> Prefs:
     jobs = raw.get("jobs")
     gapps = raw.get("gapps")
     ccache = raw.get("ccache")
+    keep_going = raw.get("keep_going")
     lang = raw.get("lang")
     voice = raw.get("voice")
     return Prefs(
@@ -70,6 +72,7 @@ def load_prefs(top: Path) -> Prefs:
         jobs=jobs if isinstance(jobs, int) and not isinstance(jobs, bool) and 1 <= jobs <= 256 else None,
         gapps=gapps if isinstance(gapps, bool) else None,
         ccache=ccache if isinstance(ccache, bool) else None,
+        keep_going=keep_going if isinstance(keep_going, bool) else None,
         lang=lang if lang in LANGS else None,
         voice=voice if voice in _VOICES else None,
     )
@@ -87,6 +90,8 @@ def save_prefs(top: Path, prefs: Prefs) -> None:
         data["gapps"] = prefs.gapps
     if isinstance(prefs.ccache, bool):
         data["ccache"] = prefs.ccache
+    if isinstance(prefs.keep_going, bool):
+        data["keep_going"] = prefs.keep_going
     if prefs.lang in LANGS:
         data["lang"] = prefs.lang
     if prefs.voice in _VOICES:
