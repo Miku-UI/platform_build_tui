@@ -19,6 +19,7 @@ import curses
 import locale
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -34,6 +35,15 @@ from devices import Product, resolve_device
 from i18n import LANG_CHIPS, detect_lang, t
 from phase import PhaseTracker
 from prefs import Prefs, load_prefs, save_prefs
+from session import (
+    accept_attach,
+    client_gone,
+    launch as launch_session,
+    notify_client,
+    release_tty,
+    take_tty,
+    try_accept,
+)
 from report import (
     BuildReport,
     Glyph,
@@ -96,6 +106,8 @@ _WHEEL_UP = getattr(curses, "BUTTON4_PRESSED", 0x10000)
 _WHEEL_DOWN = getattr(curses, "BUTTON5_PRESSED", 0x200000)
 _CLOSE_MARK = "[x]"
 _CLOSE_W = 3
+_MIN_MARK = "[-]"
+_MIN_W = 3
 
 
 def _cycle(values: tuple, current, ch: int):
@@ -560,6 +572,12 @@ class BuildTui:
         self._sel_b: tuple[int, int] | None = None
         self._wrap_key: tuple[int, int] | None = None
         self._leave = False
+        self._detach = False
+        self._listen: socket.socket | None = None
+        self._client: socket.socket | None = None
+        self._client_pgrp = 0
+        self._steal: tuple | None = None
+        self._devnull = -1
         self.host = HostMonitor(top)
 
     def _t(self, key: str, **kwargs: object) -> str:
@@ -573,6 +591,69 @@ class BuildTui:
         _ensure_utf8()
         return curses.wrapper(self._main)
 
+    def run_daemon(self, listen: socket.socket) -> int:
+        self._devnull = os.open("/dev/null", os.O_RDWR)
+        self._listen = listen
+        pending: tuple | None = None
+        code = 0
+        while True:
+            if pending is None:
+                listen.setblocking(True)
+                try:
+                    conn, _addr = listen.accept()
+                except OSError:
+                    break
+                try:
+                    tty_fd, meta = accept_attach(conn)
+                except OSError:
+                    notify_client(conn, "exit 2")
+                    continue
+            else:
+                conn, tty_fd, meta = pending
+                pending = None
+            self._client = conn
+            self._client_pgrp = int(meta.get("pgrp") or 0)
+            self._detach = False
+            self._leave = False
+            self._steal = None
+            listen.setblocking(False)
+            term = meta.get("term")
+            if isinstance(term, str) and term:
+                os.environ["TERM"] = term
+            take_tty(tty_fd)
+            try:
+                _ensure_utf8()
+                code = curses.wrapper(self._main)
+            except curses.error:
+                code = 2
+            finally:
+                for stream in (sys.stdout, sys.stderr):
+                    try:
+                        stream.flush()
+                    except Exception:
+                        pass
+                release_tty(tty_fd, self._client_pgrp)
+                if self._devnull >= 0:
+                    os.dup2(self._devnull, 0)
+                    os.dup2(self._devnull, 1)
+                    os.dup2(self._devnull, 2)
+                try:
+                    os.close(tty_fd)
+                except OSError:
+                    pass
+            steal = self._steal
+            self._steal = None
+            if steal is not None:
+                notify_client(conn, "detach")
+                pending = steal
+                continue
+            if self._detach:
+                notify_client(conn, "detach")
+                continue
+            notify_client(conn, f"exit {int(code)}")
+            break
+        return code
+
     def _main(self, stdscr: curses.window) -> int:
         self._stdscr = stdscr
         curses.curs_set(0)
@@ -584,6 +665,9 @@ class BuildTui:
         try:
             while True:
                 self._reap()
+                self._poll_session()
+                if self._leave or self._detach:
+                    return 0
                 self._draw(stdscr)
                 ch = stdscr.getch()
                 if ch == curses.ERR:
@@ -592,13 +676,24 @@ class BuildTui:
                     continue
                 if ch == curses.KEY_MOUSE:
                     self._mouse()
-                    if self._leave:
+                    if self._leave or self._detach:
                         return 0
                     continue
                 if self._key(ch):
                     return 0
         finally:
             _disable_mouse()
+
+    def _poll_session(self) -> None:
+        if client_gone(self._client):
+            self._detach = True
+            return
+        if self._listen is None:
+            return
+        steal = try_accept(self._listen)
+        if steal is not None:
+            self._steal = steal
+            self._detach = True
 
     def _reap(self) -> None:
         session = self.session
@@ -637,8 +732,7 @@ class BuildTui:
             self._draw_build(stdscr, cy, cx, ch, cw)
         else:
             self._draw_config(stdscr, cy, cx, ch, cw)
-        if self.mode != MODE_BUILD:
-            self._draw_card_close(stdscr, cy, cx, cw)
+        self._draw_card_chrome(stdscr, cy, cx, cw)
         stdscr.refresh()
 
     def _draw_banner(self, stdscr: curses.window, rows: int, width: int) -> None:
@@ -906,12 +1000,23 @@ class BuildTui:
             _add(stdscr, y + i, x, text, attr, w)
         self.hits.append(Hit(Rect(y, x, h, w), action))
 
-    def _draw_card_close(self, stdscr: curses.window, y: int, x: int, w: int) -> None:
-        if w < _CLOSE_W + 3:
+    def _chrome_reserve(self) -> int:
+        if self.mode == MODE_BUILD:
+            return _MIN_W
+        return _MIN_W + _CLOSE_W
+
+    def _draw_card_chrome(self, stdscr: curses.window, y: int, x: int, w: int) -> None:
+        reserve = self._chrome_reserve()
+        if w < reserve + 3:
             return
-        cx = x + w - 1 - _CLOSE_W
-        _add(stdscr, y, cx, _CLOSE_MARK, curses.color_pair(10) | curses.A_BOLD, _CLOSE_W)
-        self.hits.append(Hit(Rect(y, cx, 1, _CLOSE_W), "quit"))
+        cx = x + w - 1 - reserve
+        attr = curses.color_pair(10) | curses.A_BOLD
+        _add(stdscr, y, cx, _MIN_MARK, attr, _MIN_W)
+        self.hits.append(Hit(Rect(y, cx, 1, _MIN_W), "minimize"))
+        if self.mode != MODE_BUILD:
+            cx += _MIN_W
+            _add(stdscr, y, cx, _CLOSE_MARK, attr, _CLOSE_W)
+            self.hits.append(Hit(Rect(y, cx, 1, _CLOSE_W), "quit"))
 
     def _draw_lang_bar(
         self,
@@ -990,8 +1095,9 @@ class BuildTui:
             title = self._t(self.status_key, **self.status_args) if self.status_key else self._t("done")
         room = max(0, w - 4 - dw(elapsed))
         title = clip(title, room)
-        reserve = 0 if self.mode == MODE_BUILD else _CLOSE_W
-        _rounded_frame(stdscr, y, x, h, w, curses.color_pair(12), f"✦  {title}{elapsed}", reserve)
+        _rounded_frame(
+            stdscr, y, x, h, w, curses.color_pair(12), f"✦  {title}{elapsed}", self._chrome_reserve()
+        )
         inner = max(10, w - 4)
         xx = x + 2
         _add(stdscr, y + 2, xx, combo, curses.color_pair(10), inner)
@@ -1481,6 +1587,8 @@ class BuildTui:
                 self.mode = MODE_DONE
             elif self.mode == MODE_DONE:
                 self.mode = MODE_CONFIG
+        elif action == "minimize":
+            self._detach = True
         elif action == "quit":
             if self.mode == MODE_CONFIG:
                 self._leave = True
@@ -1630,9 +1738,11 @@ def run_tui(
     clean: str,
     variant: str | None,
 ) -> int:
-    app = BuildTui(top, products, release, jobs, gapps, ccache, clean, variant)
+    def make() -> BuildTui:
+        return BuildTui(top, products, release, jobs, gapps, ccache, clean, variant)
+
     try:
-        return app.run()
+        return launch_session(top, make)
     except curses.error as exc:
         print(t(detect_lang(), "tui_failed", exc=exc), file=sys.stderr)
         return 2
@@ -1855,7 +1965,7 @@ def _rounded_frame(
     w: int,
     attr: int,
     title: str = "",
-    reserve_right: int = _CLOSE_W,
+    reserve_right: int = _MIN_W + _CLOSE_W,
 ) -> None:
     if h < 2 or w < 4:
         return
