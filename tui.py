@@ -94,6 +94,8 @@ _CYCLE_PREV = (curses.KEY_LEFT,)
 _CYCLE_NEXT = (curses.KEY_RIGHT, ord(" "), curses.KEY_ENTER, 10, 13)
 _WHEEL_UP = getattr(curses, "BUTTON4_PRESSED", 0x10000)
 _WHEEL_DOWN = getattr(curses, "BUTTON5_PRESSED", 0x200000)
+_CLOSE_MARK = "[x]"
+_CLOSE_W = 3
 
 
 def _cycle(values: tuple, current, ch: int):
@@ -557,6 +559,7 @@ class BuildTui:
         self._sel_a: tuple[int, int] | None = None
         self._sel_b: tuple[int, int] | None = None
         self._wrap_key: tuple[int, int] | None = None
+        self._leave = False
         self.host = HostMonitor(top)
 
     def _t(self, key: str, **kwargs: object) -> str:
@@ -589,6 +592,8 @@ class BuildTui:
                     continue
                 if ch == curses.KEY_MOUSE:
                     self._mouse()
+                    if self._leave:
+                        return 0
                     continue
                 if self._key(ch):
                     return 0
@@ -632,6 +637,8 @@ class BuildTui:
             self._draw_build(stdscr, cy, cx, ch, cw)
         else:
             self._draw_config(stdscr, cy, cx, ch, cw)
+        if self.mode != MODE_BUILD:
+            self._draw_card_close(stdscr, cy, cx, cw)
         stdscr.refresh()
 
     def _draw_banner(self, stdscr: curses.window, rows: int, width: int) -> None:
@@ -899,6 +906,13 @@ class BuildTui:
             _add(stdscr, y + i, x, text, attr, w)
         self.hits.append(Hit(Rect(y, x, h, w), action))
 
+    def _draw_card_close(self, stdscr: curses.window, y: int, x: int, w: int) -> None:
+        if w < _CLOSE_W + 3:
+            return
+        cx = x + w - 1 - _CLOSE_W
+        _add(stdscr, y, cx, _CLOSE_MARK, curses.color_pair(10) | curses.A_BOLD, _CLOSE_W)
+        self.hits.append(Hit(Rect(y, cx, 1, _CLOSE_W), "quit"))
+
     def _draw_lang_bar(
         self,
         stdscr: curses.window,
@@ -976,7 +990,8 @@ class BuildTui:
             title = self._t(self.status_key, **self.status_args) if self.status_key else self._t("done")
         room = max(0, w - 4 - dw(elapsed))
         title = clip(title, room)
-        _rounded_frame(stdscr, y, x, h, w, curses.color_pair(12), f"✦  {title}{elapsed}")
+        reserve = 0 if self.mode == MODE_BUILD else _CLOSE_W
+        _rounded_frame(stdscr, y, x, h, w, curses.color_pair(12), f"✦  {title}{elapsed}", reserve)
         inner = max(10, w - 4)
         xx = x + 2
         _add(stdscr, y + 2, xx, combo, curses.color_pair(10), inner)
@@ -1466,6 +1481,15 @@ class BuildTui:
                 self.mode = MODE_DONE
             elif self.mode == MODE_DONE:
                 self.mode = MODE_CONFIG
+        elif action == "quit":
+            if self.mode == MODE_CONFIG:
+                self._leave = True
+            elif self.mode == MODE_PICKER:
+                self.mode = MODE_CONFIG
+            elif self.mode == MODE_RESULT:
+                self.mode = MODE_DONE
+            elif self.mode == MODE_DONE:
+                self.mode = MODE_CONFIG
         elif action == "voice" and isinstance(payload, str) and payload in {c for c, _n in VOICE_CHIPS}:
             self.voice = payload
         elif action == "lang" and isinstance(payload, str) and payload in {c for c, _n in LANG_CHIPS}:
@@ -1824,19 +1848,27 @@ def _art_attr(ch: str, row: int, n: int) -> int:
 
 
 def _rounded_frame(
-    win: curses.window, y: int, x: int, h: int, w: int, attr: int, title: str = ""
+    win: curses.window,
+    y: int,
+    x: int,
+    h: int,
+    w: int,
+    attr: int,
+    title: str = "",
+    reserve_right: int = _CLOSE_W,
 ) -> None:
     if h < 2 or w < 4:
         return
     inner = max(0, w - 2)
+    usable = max(0, inner - max(0, reserve_right))
     if title:
         label = f" {title} "
-        if dw(label) > inner:
-            label = clip(label, inner)
-        fill = max(0, inner - dw(label))
-        top = "╭" + label + "─" * fill + "╮"
+        if dw(label) > usable:
+            label = clip(label, usable)
+        fill = max(0, usable - dw(label))
+        top = "╭" + label + "─" * fill + "─" * max(0, reserve_right) + "╮"
     else:
-        top = "╭" + "─" * inner + "╮"
+        top = "╭" + "─" * usable + "─" * max(0, reserve_right) + "╮"
     _add(win, y, x, top, attr, w)
     for i in range(1, h - 1):
         _add(win, y + i, x, "│", attr, 1)
