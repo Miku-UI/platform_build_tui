@@ -40,8 +40,6 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     products = discover_products(top)
     release = args.release or default_release(top)
-    jobs = args.jobs if args.jobs is not None else max(1, os.cpu_count() or 4)
-    ccache = shutil.which("ccache") is not None if args.ccache is None else args.ccache
     clean = CLEAN_FULL if args.clean else CLEAN_INSTALL if args.installclean else CLEAN_NONE
 
     if args.device:
@@ -50,6 +48,8 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             print(exc, file=sys.stderr)
             return 2
+        jobs = args.jobs if args.jobs is not None else max(1, os.cpu_count() or 4)
+        ccache = shutil.which("ccache") is not None if args.ccache is None else args.ccache
         config = BuildConfig(
             product=product,
             jobs=jobs,
@@ -57,7 +57,7 @@ def main(argv: list[str] | None = None) -> int:
             ccache=ccache,
             clean=clean,
             release=release,
-            variant=args.variant,
+            variant=args.variant or "userdebug",
         )
         extras = []
         if config.gapps:
@@ -86,9 +86,9 @@ def main(argv: list[str] | None = None) -> int:
         top=top,
         products=products,
         release=release,
-        jobs=jobs,
-        gapps=args.gapps,
-        ccache=ccache,
+        jobs=args.jobs,
+        gapps=True if args.gapps else None,
+        ccache=args.ccache,
         clean=clean,
         variant=args.variant,
     )
@@ -112,7 +112,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--clean", action="store_true", help=t(lang, "cli_clean"))
     parser.add_argument("--installclean", action="store_true", help=t(lang, "cli_installclean"))
     parser.add_argument("--release", help=t(lang, "cli_release"))
-    parser.add_argument("--variant", default="userdebug", help=t(lang, "cli_variant"))
+    parser.add_argument("--variant", default=None, help=t(lang, "cli_variant"))
     args = parser.parse_args(argv)
     if args.jobs is not None and args.jobs < 1:
         parser.error(t(lang, "cli_jobs_err"))

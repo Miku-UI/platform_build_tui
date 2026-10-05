@@ -30,9 +30,10 @@ from pathlib import Path
 
 from art import SPARKS, banner_lines, logo_lines
 from builder import BuildConfig, BuildSession
-from devices import Product
+from devices import Product, resolve_device
 from i18n import LANG_CHIPS, detect_lang, t
 from phase import PhaseTracker
+from prefs import Prefs, load_prefs, save_prefs
 from sysinfo import HostMonitor, fmt_freq, fmt_pair
 
 MODE_CONFIG = "config"
@@ -405,24 +406,57 @@ class BuildTui:
         top: Path,
         products: list[Product],
         release: str,
-        jobs: int,
-        gapps: bool,
-        ccache: bool,
+        jobs: int | None,
+        gapps: bool | None,
+        ccache: bool | None,
         clean: str,
-        variant: str,
+        variant: str | None,
     ) -> None:
         self.top = top
         self.products = products
         self.release = release
-        self.variant = variant
-        self.jobs = max(1, jobs)
-        self.gapps = gapps
-        self.ccache = ccache
+        prefs = load_prefs(top)
+        if variant is not None:
+            self.variant = variant
+        elif prefs.variant is not None:
+            self.variant = prefs.variant
+        else:
+            self.variant = "userdebug"
+        if jobs is not None:
+            self.jobs = max(1, jobs)
+        elif prefs.jobs is not None:
+            self.jobs = prefs.jobs
+        else:
+            self.jobs = max(1, os.cpu_count() or 4)
+        if gapps is not None:
+            self.gapps = gapps
+        elif prefs.gapps is not None:
+            self.gapps = prefs.gapps
+        else:
+            self.gapps = False
+        if ccache is not None:
+            self.ccache = ccache
+        elif prefs.ccache is not None:
+            self.ccache = prefs.ccache
+        else:
+            self.ccache = shutil.which("ccache") is not None
         self.clean = clean
-        self.selected: Product | None = products[0] if len(products) == 1 else None
+        self.selected: Product | None = None
+        if prefs.device:
+            try:
+                self.selected = resolve_device(products, prefs.device)
+            except ValueError:
+                self.selected = None
+        if self.selected is None and len(products) == 1:
+            self.selected = products[0]
         self.mode = MODE_CONFIG
         self.focus = 0
         self.picker_index = 0
+        if self.selected is not None:
+            try:
+                self.picker_index = products.index(self.selected)
+            except ValueError:
+                self.picker_index = 0
         self.picker_off = 0
         self.log = LogBuffer()
         self.phase = PhaseTracker()
@@ -432,8 +466,8 @@ class BuildTui:
         self.hits: list[Hit] = []
         self.status_key = ""
         self.status_args: dict[str, object] = {}
-        self.lang = detect_lang()
-        self.voice = VOICE_PRO
+        self.lang = prefs.lang or detect_lang()
+        self.voice = prefs.voice or VOICE_PRO
         self._btn_down = False
         self._btn_hit: tuple[str, object] | None = None
         self._click_guard: tuple[float, str, object] = (0.0, "", None)
@@ -1097,6 +1131,7 @@ class BuildTui:
         if ch in (getattr(curses, "KEY_BTAB", 353), curses.KEY_UP):
             self.focus = (self.focus - 1) % len(_FOCUS)
             return False
+        before = self._prefs_snapshot()
         name = _FOCUS[self.focus]
         if name == "device" and ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
             self._open_picker()
@@ -1120,6 +1155,7 @@ class BuildTui:
             self.clean = _cycle((CLEAN_NONE, CLEAN_INSTALL, CLEAN_FULL), self.clean, ch)
         elif name == "build" and ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
             self._start_build()
+        self._persist_if_changed(before)
         return False
 
     def _key_picker(self, ch: int) -> bool:
@@ -1156,6 +1192,7 @@ class BuildTui:
         return False
 
     def _action(self, action: str, payload: object = None) -> None:
+        before = self._prefs_snapshot()
         if action == "device":
             self._set_focus("device")
             self._open_picker()
@@ -1201,6 +1238,29 @@ class BuildTui:
             self.lang = payload
         elif action == "log":
             pass
+        self._persist_if_changed(before)
+
+    def _prefs_snapshot(self) -> tuple:
+        device = self.selected.product_name if self.selected is not None else None
+        return (device, self.variant, self.jobs, self.gapps, self.ccache, self.lang, self.voice)
+
+    def _persist_if_changed(self, before: tuple) -> None:
+        if self._prefs_snapshot() != before:
+            self._persist()
+
+    def _persist(self) -> None:
+        save_prefs(
+            self.top,
+            Prefs(
+                device=self.selected.product_name if self.selected is not None else None,
+                variant=self.variant,
+                jobs=self.jobs,
+                gapps=self.gapps,
+                ccache=self.ccache,
+                lang=self.lang,
+                voice=self.voice,
+            ),
+        )
 
     def _open_picker(self) -> None:
         if not self.products:
@@ -1281,11 +1341,11 @@ def run_tui(
     top: Path,
     products: list[Product],
     release: str,
-    jobs: int,
-    gapps: bool,
-    ccache: bool,
+    jobs: int | None,
+    gapps: bool | None,
+    ccache: bool | None,
     clean: str,
-    variant: str,
+    variant: str | None,
 ) -> int:
     app = BuildTui(top, products, release, jobs, gapps, ccache, clean, variant)
     try:
