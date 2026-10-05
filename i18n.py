@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import os
 
+from i18n_moe import lookup as moe_lookup
+
 LANGS = ("en", "zh", "ja", "ru", "tr")
 LANG_CHIPS = (
     ("zh", "中"),
@@ -54,14 +56,6 @@ _STRINGS: dict[str, dict[str, str]] = {
         "phase_kati": "Generating build graph",
         "phase_ninja": "Compiling",
         "phase_package": "Packaging",
-        "moe_phase_setup": "Miku is preparing the env... (ˉ﹃ˉ)",
-        "moe_phase_lunch": "Miku is setting up Lunch ( •̀ ω •́ )✧",
-        "moe_phase_clean": "Miku is sweeping the battlefield... (╯°□°)╯︵ ┻━┻",
-        "moe_phase_config": "Miku is getting the device config ready... (●ˇ∀ˇ●)",
-        "moe_phase_soong": "Miku is studying the source... (＠_＠;)",
-        "moe_phase_kati": "Miku is planning the build... (★ ω ★)",
-        "moe_phase_ninja": "Miku is compiling... (o゜▽゜)o☆",
-        "moe_phase_package": "Almost there... Miku is packing up...（；´д｀）ゞ",
         "done": "Done",
         "stopped": "Stopped",
         "build_ok": "Build finished",
@@ -119,14 +113,6 @@ _STRINGS: dict[str, dict[str, str]] = {
         "phase_kati": "正在生成构建图",
         "phase_ninja": "正在编译",
         "phase_package": "正在打包",
-        "moe_phase_setup": "Miku 准备环境ing... (ˉ﹃ˉ)",
-        "moe_phase_lunch": "Miku 配置 Lunch 中 ( •̀ ω •́ )✧",
-        "moe_phase_clean": "Miku 打扫战场ing... (╯°□°)╯︵ ┻━┻",
-        "moe_phase_config": "Miku 正在准备要构建的机型配置ing... (●ˇ∀ˇ●)",
-        "moe_phase_soong": "Miku 研究源码ing... (＠_＠;)",
-        "moe_phase_kati": "Miku 规划构建计划ing... (★ ω ★)",
-        "moe_phase_ninja": "Miku 正在编译ing... (o゜▽゜)o☆",
-        "moe_phase_package": "就快要好啦... Miku 正在打包ing...（；´д｀）ゞ",
         "done": "完成",
         "stopped": "已停止",
         "build_ok": "构建完成",
@@ -184,14 +170,6 @@ _STRINGS: dict[str, dict[str, str]] = {
         "phase_kati": "ビルドグラフ生成中",
         "phase_ninja": "コンパイル中",
         "phase_package": "パッケージ中",
-        "moe_phase_setup": "ミク、環境づくり中… (ˉ﹃ˉ)",
-        "moe_phase_lunch": "ミク、Lunch せってい中 ( •̀ ω •́ )✧",
-        "moe_phase_clean": "ミク、戦場リセット中… (╯°□°)╯︵ ┻━┻",
-        "moe_phase_config": "ミク、機種コンフィグ用意してるよ… (●ˇ∀ˇ●)",
-        "moe_phase_soong": "ミク、ソース研究中… (＠_＠;)",
-        "moe_phase_kati": "ミク、ビルド計画ちゅう… (★ ω ★)",
-        "moe_phase_ninja": "ミク、コンパイルしてるよ… (o゜▽゜)o☆",
-        "moe_phase_package": "もうすぐだよ… ミク、パッケージ中…（；´д｀）ゞ",
         "done": "完了",
         "stopped": "停止しました",
         "build_ok": "ビルド完了",
@@ -249,14 +227,6 @@ _STRINGS: dict[str, dict[str, str]] = {
         "phase_kati": "Генерация графа",
         "phase_ninja": "Компиляция",
         "phase_package": "Упаковка",
-        "moe_phase_setup": "Мику готовит окружение... (ˉ﹃ˉ)",
-        "moe_phase_lunch": "Мику настраивает Lunch ( •̀ ω •́ )✧",
-        "moe_phase_clean": "Мику зачищает поле боя... (╯°□°)╯︵ ┻━┻",
-        "moe_phase_config": "Мику готовит конфиг устройства... (●ˇ∀ˇ●)",
-        "moe_phase_soong": "Мику изучает исходники... (＠_＠;)",
-        "moe_phase_kati": "Мику планирует сборку... (★ ω ★)",
-        "moe_phase_ninja": "Мику компилирует... (o゜▽゜)o☆",
-        "moe_phase_package": "Почти готово... Мику пакует...（；´д｀）ゞ",
         "done": "Готово",
         "stopped": "Остановлено",
         "build_ok": "Сборка завершена",
@@ -314,14 +284,6 @@ _STRINGS: dict[str, dict[str, str]] = {
         "phase_kati": "Derleme grafiği oluşturuluyor",
         "phase_ninja": "Derleniyor",
         "phase_package": "Paketleniyor",
-        "moe_phase_setup": "Miku ortamı hazırlıyor... (ˉ﹃ˉ)",
-        "moe_phase_lunch": "Miku Lunch ayarlıyor ( •̀ ω •́ )✧",
-        "moe_phase_clean": "Miku savaş alanını temizliyor... (╯°□°)╯︵ ┻━┻",
-        "moe_phase_config": "Miku cihaz yapılandırmasını hazırlıyor... (●ˇ∀ˇ●)",
-        "moe_phase_soong": "Miku kaynak kodunu inceliyor... (＠_＠;)",
-        "moe_phase_kati": "Miku derleme planı yapıyor... (★ ω ★)",
-        "moe_phase_ninja": "Miku derliyor... (o゜▽゜)o☆",
-        "moe_phase_package": "Az kaldı... Miku paketiliyor...（；´д｀）ゞ",
         "done": "Bitti",
         "stopped": "Durduruldu",
         "build_ok": "Derleme tamamlandı",
@@ -378,9 +340,11 @@ def detect_lang() -> str:
     return "en"
 
 
-def t(lang: str, key: str, **kwargs: object) -> str:
-    table = _STRINGS.get(lang) or _STRINGS["en"]
-    text = table.get(key) or _STRINGS["en"].get(key, key)
+def t(lang: str, key: str, *, voice: str = "pro", **kwargs: object) -> str:
+    text = moe_lookup(lang, key) if voice == "moe" else None
+    if text is None:
+        table = _STRINGS.get(lang) or _STRINGS["en"]
+        text = table.get(key) or _STRINGS["en"].get(key, key)
     if kwargs:
         return text.format(**kwargs)
     return text

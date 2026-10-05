@@ -482,7 +482,7 @@ class BuildTui:
         self.host = HostMonitor(top)
 
     def _t(self, key: str, **kwargs: object) -> str:
-        return t(self.lang, key, **kwargs)
+        return t(self.lang, key, voice=self.voice, **kwargs)
 
     def _set_status(self, key: str = "", **kwargs: object) -> None:
         self.status_key = key
@@ -722,8 +722,6 @@ class BuildTui:
 
     def _phase_title(self) -> str:
         key, args = self.phase.snapshot()
-        if self.voice == VOICE_MOE:
-            key = "moe_" + key
         return self._t(key, **args)
 
     def _jobs_row(self, stdscr: curses.window, y: int, x: int, width: int) -> None:
