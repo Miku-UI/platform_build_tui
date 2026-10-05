@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 
 MARKER_PREFIX = "[miku-tui] phase="
 
@@ -71,6 +72,10 @@ class PhaseTracker:
         self._buf = ""
         self.key = "phase_setup"
         self._make = False
+        self.entered: dict[str, float] = {"phase_setup": time.time()}
+        self.ninja_total: int | None = None
+        self.ninja_done: int | None = None
+        self.package_path: str | None = None
 
     def feed(self, text: str) -> None:
         if not text:
@@ -88,11 +93,19 @@ class PhaseTracker:
         with self._lock:
             return self.key, {}
 
+    def snapshot_report(
+        self,
+    ) -> tuple[str, dict[str, float], int | None, int | None, str | None]:
+        with self._lock:
+            return self.key, dict(self.entered), self.ninja_total, self.ninja_done, self.package_path
+
     def _advance(self, key: str) -> None:
         new = _RANK[key]
         cur = _RANK[self.key]
         if new < cur and key not in _REWIND:
             return
+        if key not in self.entered:
+            self.entered[key] = time.time()
         self.key = key
 
     def _on_line(self, line: str) -> None:
@@ -115,6 +128,10 @@ class PhaseTracker:
             return
         if not self._make:
             return
+        if line.startswith("Package Complete:"):
+            path = line.split(":", 1)[1].strip()
+            if path:
+                self.package_path = path
         if _is_soong(line):
             self._advance("phase_soong")
             return
@@ -138,10 +155,24 @@ class PhaseTracker:
             if _KATI_RE.search(rest) or _KATI_RE.search(line):
                 self._advance("phase_kati")
                 return
+            try:
+                done = int(prog.group(1))
+                total = int(prog.group(2))
+            except ValueError:
+                done = 0
+                total = 0
+            if "Package OTA" in line and _RANK[self.key] >= _RANK["phase_ninja"]:
+                if total > 0:
+                    self.ninja_total = total
+                self.ninja_done = done
+                self._advance("phase_package")
+                return
             if _is_package(line) and _RANK[self.key] >= _RANK["phase_ninja"]:
                 self._advance("phase_package")
                 return
             self._advance("phase_ninja")
+            if self.key == "phase_ninja":
+                self.ninja_done = done
             return
         if _is_package(line) and _RANK[self.key] >= _RANK["phase_ninja"]:
             self._advance("phase_package")

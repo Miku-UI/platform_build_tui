@@ -34,12 +34,48 @@ from devices import Product, resolve_device
 from i18n import LANG_CHIPS, detect_lang, t
 from phase import PhaseTracker
 from prefs import Prefs, load_prefs, save_prefs
-from sysinfo import HostMonitor, fmt_freq, fmt_pair
+from report import (
+    BuildReport,
+    Glyph,
+    bar_widths,
+    build_report,
+    fmt_delta,
+    fmt_duration,
+    fmt_mb,
+    fmt_size_delta,
+)
+from sysinfo import HostMonitor, fmt_freq, fmt_pair, read_miku_rom_version
 
 MODE_CONFIG = "config"
 MODE_PICKER = "picker"
 MODE_BUILD = "build"
 MODE_DONE = "done"
+MODE_RESULT = "result"
+
+_STAGE_PAIR = {
+    "prepare": 37,
+    "clean": 38,
+    "soong": 39,
+    "kati": 40,
+    "ninja": 41,
+    "package": 42,
+}
+_STAGE_TIME_KEY = {
+    "prepare": "result_time_prepare",
+    "clean": "result_time_clean",
+    "soong": "result_time_soong",
+    "kati": "result_time_kati",
+    "ninja": "result_time_ninja",
+    "package": "result_time_package",
+}
+_STAGE_NAME_KEY = {
+    "prepare": "result_stage_prepare",
+    "clean": "result_stage_clean",
+    "soong": "result_stage_soong",
+    "kati": "result_stage_kati",
+    "ninja": "result_stage_ninja",
+    "package": "result_stage_package",
+}
 
 CLEAN_NONE = "none"
 CLEAN_INSTALL = "installclean"
@@ -150,6 +186,18 @@ class LogBuffer:
                 if any(cell.ch != " " for cell in self.table[row])
             ]
             return [list(line) for line in self.lines], list(self.cur), table, self._inplace
+
+    def plain_lines(self) -> list[str]:
+        return ["".join(g.ch for g in row).rstrip() for row in self.glyph_rows()]
+
+    def glyph_rows(self) -> list[list[Glyph]]:
+        committed, current, table, _inplace = self.snapshot()
+        rows = [_cells_to_glyphs(line) for line in committed]
+        if current:
+            rows.append(_cells_to_glyphs(current))
+        for line in table:
+            rows.append(_cells_to_glyphs(line))
+        return rows
 
     def _in_table(self) -> bool:
         return self.margin_bottom > 0 and self.cursor_row > self.margin_bottom
@@ -367,6 +415,33 @@ def _xterm256_to_16(n: int) -> int:
     return 12 if b > 3 else 4
 
 
+def _cells_to_glyphs(cells: list[Cell]) -> list[Glyph]:
+    return [Glyph(c.ch, c.fg, c.bold, c.dim, c.underline) for c in cells]
+
+
+def _wrap_glyphs(glyphs: list[Glyph], width: int) -> list[list[Glyph]]:
+    cells = [Cell(g.ch, g.fg, g.bold, g.dim, g.underline) for g in glyphs]
+    return [_cells_to_glyphs(row) for row in wrap_cells(cells, width)]
+
+
+def _glyphs_to_segs(glyphs: list[Glyph]) -> list[tuple[str, int]]:
+    if not glyphs:
+        return [("", curses.color_pair(7))]
+    segs: list[tuple[str, int]] = []
+    buf = [glyphs[0].ch]
+    attr = _cell_attr(Cell(glyphs[0].ch, glyphs[0].fg, glyphs[0].bold, glyphs[0].dim, glyphs[0].underline))
+    for g in glyphs[1:]:
+        nxt = _cell_attr(Cell(g.ch, g.fg, g.bold, g.dim, g.underline))
+        if nxt == attr:
+            buf.append(g.ch)
+            continue
+        segs.append(("".join(buf), attr))
+        buf = [g.ch]
+        attr = nxt
+    segs.append(("".join(buf), attr))
+    return segs
+
+
 def wrap_cells(cells: list[Cell], width: int) -> list[list[Cell]]:
     width = max(1, width)
     if not cells:
@@ -461,6 +536,9 @@ class BuildTui:
         self.log = LogBuffer()
         self.phase = PhaseTracker()
         self.log_scroll = 0
+        self.report: BuildReport | None = None
+        self.result_scroll = 0
+        self._result_n = 0
         self.session: BuildSession | None = None
         self._stopping: BuildSession | None = None
         self.hits: list[Hit] = []
@@ -522,13 +600,15 @@ class BuildTui:
         if self.mode == MODE_BUILD and session is not None and not session.running:
             code = session.returncode
             session.close()
-            self.mode = MODE_DONE
             if session.stopped:
                 self._set_status("stopped")
+                self.mode = MODE_DONE
             elif code == 0:
                 self._set_status("build_ok")
+                self._open_result(session, True)
             else:
                 self._set_status("build_fail", code=code)
+                self._open_result(session, False)
             self.host.tick(force_disk=True)
         if self._stopping is not None and not self._stopping.running:
             self._stopping = None
@@ -546,6 +626,8 @@ class BuildTui:
         self._draw_banner(stdscr, rows, left)
         if self.mode == MODE_PICKER:
             self._draw_picker(stdscr, cy, cx, ch, cw)
+        elif self.mode == MODE_RESULT:
+            self._draw_result(stdscr, cy, cx, ch, cw)
         elif self.mode in (MODE_BUILD, MODE_DONE):
             self._draw_build(stdscr, cy, cx, ch, cw)
         else:
@@ -916,6 +998,135 @@ class BuildTui:
         self._fill_btn(stdscr, btn_y, btn_x, 3, btn_w, btn, btn_attr, "stop_or_back")
         self._draw_lang_bar(stdscr, y + h - 2, xx, inner)
 
+    def _draw_result(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        report = self.report
+        if report is None:
+            self._draw_build(stdscr, y, x, h, w)
+            return
+        session = self.session
+        elapsed = ""
+        if session is not None:
+            end = session.finished_at or time.time()
+            elapsed = "  " + _fmt_elapsed(end - session.started_at)
+        frame = clip(self._t("result_frame"), max(0, w - 4 - dw(elapsed)))
+        _rounded_frame(stdscr, y, x, h, w, curses.color_pair(12), f"✦  {frame}{elapsed}")
+        inner = max(10, w - 4)
+        xx = x + 2
+        body_top = y + 2
+        body_h = max(3, h - 8)
+        self._log_geom = Rect(body_top, xx, body_h, inner)
+        rows = self._result_rows(report, inner)
+        self._result_n = len(rows)
+        max_off = max(0, len(rows) - body_h)
+        self.result_scroll = min(max(0, self.result_scroll), max_off)
+        view = rows[self.result_scroll : self.result_scroll + body_h]
+        for i, segs in enumerate(view):
+            _add_segs(stdscr, body_top + i, xx, segs, inner)
+        btn = self._t("back")
+        btn_w = min(inner, max(16, dw(btn) + 10))
+        btn_x = x + max(0, (w - btn_w) // 2)
+        btn_y = y + h - 5
+        self._fill_btn(
+            stdscr, btn_y, btn_x, 3, btn_w, btn, curses.color_pair(9) | curses.A_BOLD, "stop_or_back"
+        )
+        self._draw_lang_bar(stdscr, y + h - 2, xx, inner)
+
+    def _result_rows(self, report: BuildReport, width: int) -> list[list[tuple[str, int]]]:
+        label_a = curses.color_pair(15)
+        value_a = curses.color_pair(2) | curses.A_BOLD
+        title_a = curses.color_pair(11) | curses.A_BOLD
+        dim_a = curses.color_pair(10)
+        rows: list[list[tuple[str, int]]] = []
+
+        def blank() -> None:
+            rows.append([])
+
+        def title(text: str) -> None:
+            rows.append([(text, title_a)])
+
+        def kv(label: str, value: str, vattr: int = value_a) -> None:
+            rows.extend(_kv_rows(label, value, label_a, vattr, width))
+
+        headline = self._t("result_headline", version=report.version) + self._t(
+            "result_headline_ok" if report.ok else "result_headline_fail"
+        )
+        for line in wrap_words(headline, width) or [headline]:
+            rows.append([(line, title_a)])
+        blank()
+        targets = str(report.targets) if report.targets is not None else self._t("result_unknown")
+        kv(self._t("result_targets"), targets)
+        kv(self._t("result_targets_delta"), *_delta_pair(report.targets_delta, self._t("result_first"), False))
+        blank()
+        title(self._t("result_timing"))
+        for timing in report.timings:
+            pair = _STAGE_PAIR.get(timing.key, 2)
+            key = _STAGE_TIME_KEY.get(timing.key)
+            if key is None:
+                continue
+            label_c = curses.color_pair(pair)
+            rows.extend(_kv_rows(self._t(key), fmt_duration(timing.seconds), label_c, value_a, width))
+        rows.extend(
+            _kv_rows(self._t("result_time_total"), fmt_duration(report.total), title_a, value_a, width)
+        )
+        blank()
+        bar_w = max(8, width)
+        parts = bar_widths([t.seconds for t in report.timings], bar_w)
+        bar: list[tuple[str, int]] = []
+        filled = 0
+        for timing, n in zip(report.timings, parts):
+            if n <= 0:
+                continue
+            pair = _STAGE_PAIR.get(timing.key, 44)
+            bar.append(("█" * n, curses.color_pair(pair) | curses.A_BOLD))
+            filled += n
+        if filled < bar_w:
+            bar.append(("░" * (bar_w - filled), curses.color_pair(44)))
+        if not bar:
+            bar.append(("░" * bar_w, curses.color_pair(44)))
+        rows.append(bar)
+        cap = self._t("result_bar_caption")
+        pad = max(0, (width - dw(cap)) // 2)
+        rows.append([(" " * pad + cap, dim_a)])
+        if report.ok:
+            blank()
+            title(self._t("result_artifacts"))
+            kv(self._t("result_device_code"), report.device or self._t("result_unknown"))
+            kv(self._t("result_device_name"), report.model or self._t("result_unknown"))
+            if report.gapps:
+                kv(self._t("result_has_gapps"), self._t("yes"), curses.color_pair(4) | curses.A_BOLD)
+            else:
+                kv(self._t("result_has_gapps"), self._t("no"), curses.color_pair(5) | curses.A_BOLD)
+            path = report.artifact_rel or self._t("result_unknown")
+            kv(self._t("result_artifact_path"), path)
+            size = fmt_mb(report.artifact_size) if report.artifact_size is not None else self._t("result_unknown")
+            kv(self._t("result_artifact_size"), size)
+            kv(self._t("result_size_delta"), *_delta_pair(report.size_delta, self._t("result_first"), True))
+            kv(self._t("result_sha256"), report.sha256 or self._t("result_unknown"))
+            if report.signed is True:
+                kv(self._t("result_signed"), self._t("yes"), curses.color_pair(4) | curses.A_BOLD)
+                if report.key_rel:
+                    kv(self._t("result_key_path"), report.key_rel)
+            elif report.signed is False:
+                kv(self._t("result_signed"), self._t("no"), curses.color_pair(5) | curses.A_BOLD)
+        else:
+            blank()
+            title(self._t("result_fail_analysis"))
+            stage_key = _STAGE_NAME_KEY.get(report.fail_stage or "", "result_stage_prepare")
+            stage_pair = _STAGE_PAIR.get(report.fail_stage or "prepare", 2)
+            kv(self._t("result_fail_stage"), self._t(stage_key), curses.color_pair(stage_pair) | curses.A_BOLD)
+            if not report.failures:
+                kv(self._t("result_fail_reason"), self._t("result_unknown"))
+            for item in report.failures:
+                if report.fail_stage == "ninja" and item.module:
+                    kv(self._t("result_fail_module"), item.module)
+                rows.append([(self._t("result_fail_reason"), label_a)])
+                for glyphs in item.rows:
+                    wrapped = _wrap_glyphs(glyphs, max(1, width - 2))
+                    for piece in wrapped:
+                        rows.append([("  ", dim_a), *_glyphs_to_segs(piece)])
+                blank()
+        return rows
+
     def _draw_log(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         key = (self.log.generation, w)
         if self._wrap_key != key:
@@ -1053,6 +1264,10 @@ class BuildTui:
         if self.mode == MODE_PICKER:
             self.picker_index = min(max(0, self.picker_index + delta), max(0, len(self.products) - 1))
             return
+        if self.mode == MODE_RESULT:
+            max_off = max(0, self._result_n - max(1, self._log_geom.h))
+            self.result_scroll = min(max(0, self.result_scroll + delta), max_off)
+            return
         if self.mode in (MODE_BUILD, MODE_DONE):
             max_off = max(0, len(self._wrapped) - max(1, self._log_geom.h))
             self.log_scroll = min(max(0, self.log_scroll - delta), max_off)
@@ -1116,6 +1331,8 @@ class BuildTui:
             return True
         if self.mode == MODE_PICKER:
             return self._key_picker(ch)
+        if self.mode == MODE_RESULT:
+            return self._key_result(ch)
         if self.mode in (MODE_BUILD, MODE_DONE):
             return self._key_build(ch)
         return self._key_config(ch)
@@ -1189,6 +1406,23 @@ class BuildTui:
             self._action("stop_or_back")
         return False
 
+    def _key_result(self, ch: int) -> bool:
+        if ch in (curses.KEY_UP, _WHEEL_UP):
+            self.result_scroll = max(0, self.result_scroll - 1)
+        elif ch in (curses.KEY_DOWN,):
+            self.result_scroll += 1
+        elif ch in (curses.KEY_PPAGE,):
+            self.result_scroll = max(0, self.result_scroll - 10)
+        elif ch in (curses.KEY_NPAGE,):
+            self.result_scroll += 10
+        elif ch in (curses.KEY_HOME,):
+            self.result_scroll = 0
+        elif ch in (curses.KEY_END,):
+            self.result_scroll = max(0, self._result_n)
+        elif ch in (curses.KEY_ENTER, 10, 13, ord(" "), 27, ord("q"), ord("Q")):
+            self._action("stop_or_back")
+        return False
+
     def _action(self, action: str, payload: object = None) -> None:
         before = self._prefs_snapshot()
         if action == "device":
@@ -1228,6 +1462,8 @@ class BuildTui:
         elif action == "stop_or_back":
             if self.mode == MODE_BUILD:
                 self._stop_build()
+            elif self.mode == MODE_RESULT:
+                self.mode = MODE_DONE
             elif self.mode == MODE_DONE:
                 self.mode = MODE_CONFIG
         elif action == "voice" and isinstance(payload, str) and payload in {c for c, _n in VOICE_CHIPS}:
@@ -1284,6 +1520,8 @@ class BuildTui:
         self.log = log
         self.phase = phase
         self.log_scroll = 0
+        self.report = None
+        self.result_scroll = 0
         self._wrapped = []
         self._wrap_key = None
         self._sel_a = None
@@ -1333,6 +1571,29 @@ class BuildTui:
             extras.append(self.clean)
         extra = ("  " + " ".join(extras)) if extras else ""
         return f"{name}-{self.release}-{self.variant}  -j{self.jobs}{extra}"
+
+    def _open_result(self, session: BuildSession, ok: bool) -> None:
+        phase_key, entered, ninja_total, ninja_done, package_path = self.phase.snapshot_report()
+        started = session.started_at
+        finished = session.finished_at or time.time()
+        report = build_report(
+            top=self.top,
+            product=session.config.product,
+            version=read_miku_rom_version(self.top),
+            ok=ok,
+            started=started,
+            finished=finished,
+            entered=entered,
+            phase_key=phase_key,
+            ninja_total=ninja_total,
+            ninja_done=ninja_done,
+            package_hint=package_path,
+            log_rows=self.log.glyph_rows(),
+            gapps=session.config.gapps,
+        )
+        self.report = report
+        self.result_scroll = 0
+        self.mode = MODE_RESULT
 
 
 def run_tui(
@@ -1457,6 +1718,42 @@ def wrap_words(text: str, width: int) -> list[str]:
     if current:
         lines.append(current)
     return lines or [""]
+
+
+def _kv_rows(
+    label: str, value: str, label_attr: int, value_attr: int, width: int
+) -> list[list[tuple[str, int]]]:
+    if dw(label) + dw(value) <= width:
+        return [[(label, label_attr), (value, value_attr)]]
+    rows: list[list[tuple[str, int]]] = [[(label, label_attr)]]
+    for line in wrap_words(value, max(1, width - 2)):
+        rows.append([("  " + line, value_attr)])
+    return rows
+
+
+def _delta_pair(delta: int | None, first: str, size: bool) -> tuple[str, int]:
+    if delta is None:
+        return first, curses.color_pair(6) | curses.A_BOLD
+    text = fmt_size_delta(delta) if size else fmt_delta(delta)
+    if delta > 0:
+        return text, curses.color_pair(5) | curses.A_BOLD
+    if delta < 0:
+        return text, curses.color_pair(4) | curses.A_BOLD
+    return text, curses.color_pair(10)
+
+
+def _add_segs(
+    win: curses.window, y: int, x: int, segs: list[tuple[str, int]], width: int
+) -> None:
+    col = 0
+    for text, attr in segs:
+        if col >= width:
+            break
+        chunk = clip(text, width - col)
+        if not chunk:
+            continue
+        _add(win, y, x + col, chunk, attr, width - col)
+        col += dw(chunk)
 
 
 def clip(text: str, width: int) -> str:
@@ -1588,6 +1885,13 @@ def _init_colors() -> None:
         curses.init_pair(34, 221, -1)
         curses.init_pair(35, 213, -1)
         curses.init_pair(36, 75, -1)
+        curses.init_pair(37, 87, -1)
+        curses.init_pair(38, 221, -1)
+        curses.init_pair(39, 213, -1)
+        curses.init_pair(40, 75, -1)
+        curses.init_pair(41, 114, -1)
+        curses.init_pair(42, 250, -1)
+        curses.init_pair(44, 66, -1)
         return
     curses.init_pair(1, curses.COLOR_CYAN, -1)
     curses.init_pair(2, curses.COLOR_WHITE, -1)
@@ -1621,6 +1925,13 @@ def _init_colors() -> None:
     curses.init_pair(34, curses.COLOR_YELLOW, -1)
     curses.init_pair(35, curses.COLOR_MAGENTA, -1)
     curses.init_pair(36, curses.COLOR_BLUE, -1)
+    curses.init_pair(37, curses.COLOR_CYAN, -1)
+    curses.init_pair(38, curses.COLOR_YELLOW, -1)
+    curses.init_pair(39, curses.COLOR_MAGENTA, -1)
+    curses.init_pair(40, curses.COLOR_BLUE, -1)
+    curses.init_pair(41, curses.COLOR_GREEN, -1)
+    curses.init_pair(42, curses.COLOR_WHITE, -1)
+    curses.init_pair(44, curses.COLOR_CYAN, -1)
 
 
 def _ensure_utf8() -> None:
