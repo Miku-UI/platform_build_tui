@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +22,7 @@ from pathlib import Path
 _ASSIGN = re.compile(r"^([A-Z0-9_]+)\s*(\+|:)*=\s*(.*)$")
 _LOCAL_DIR = re.compile(r"\$\(LOCAL_DIR\)")
 _INCLUDE = re.compile(r"^(?:include|-include|sinclude)\s+(\S+\.mk)\s*$")
+_CATALOG = Path("device") / "list" / "devices.json"
 
 
 @dataclass(frozen=True)
@@ -28,7 +30,8 @@ class Product:
     product_name: str
     product_model: str
     product_device: str
-    makefile: Path
+    makefile: Path | None = None
+    remote: bool = False
 
     @property
     def label(self) -> str:
@@ -63,7 +66,11 @@ def discover_products(top: Path) -> list[Product]:
             if product is None:
                 continue
             products[product.product_name] = product
-    return sorted(products.values(), key=lambda p: (p.product_model.lower(), p.product_name))
+    _merge_catalog(top, products)
+    key = lambda p: (p.product_model.lower(), p.product_name)
+    local = sorted((p for p in products.values() if not p.remote), key=key)
+    remote = sorted((p for p in products.values() if p.remote), key=key)
+    return local + remote
 
 
 def resolve_device(products: list[Product], query: str) -> Product:
@@ -92,7 +99,10 @@ def resolve_device(products: list[Product], query: str) -> Product:
     for pred, how in (
         (lambda p: p.product_name.lower() == lowered, "PRODUCT_NAME"),
         (lambda p: p.product_name.lower() == f"miku_{lowered}", "miku_ prefix"),
-        (lambda p: p.makefile.parent.name.lower() == lowered, "device directory"),
+        (
+            lambda p: p.makefile is not None and p.makefile.parent.name.lower() == lowered,
+            "device directory",
+        ),
     ):
         try:
             return pick([p for p in products if pred(p)], how)
@@ -102,6 +112,44 @@ def resolve_device(products: list[Product], query: str) -> Product:
 
     labels = "\n".join(f"  {p.label}" for p in products) or "  (none)"
     raise ValueError(f"unknown device {raw!r}\navailable:\n{labels}")
+
+
+def _merge_catalog(top: Path, products: dict[str, Product]) -> None:
+    known = {p.product_device.lower() for p in products.values()}
+    for device, model in _catalog_entries(top):
+        lowered = device.lower()
+        if lowered in known:
+            continue
+        name = f"miku_{device}"
+        if name in products:
+            continue
+        products[name] = Product(
+            product_name=name,
+            product_model=model,
+            product_device=device,
+            remote=True,
+        )
+        known.add(lowered)
+
+
+def _catalog_entries(top: Path) -> list[tuple[str, str]]:
+    path = top / _CATALOG
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return []
+    if not isinstance(raw, dict):
+        return []
+    entries: list[tuple[str, str]] = []
+    for key, value in raw.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            continue
+        device = key.strip()
+        model = value.strip()
+        if not device or not model:
+            continue
+        entries.append((device, model))
+    return entries
 
 
 def _android_products_files(top: Path) -> list[Path]:

@@ -1059,6 +1059,17 @@ class BuildTui:
             self.hits.append(Hit(Rect(y, cx, 1, w), "lang", code))
             cx += w + 1
 
+    def _picker_rows(self) -> list[tuple[str, int | str]]:
+        rows: list[tuple[str, int | str]] = [("head", "picker_local")]
+        for i, product in enumerate(self.products):
+            if not product.remote:
+                rows.append(("item", i))
+        rows.append(("head", "picker_remote"))
+        for i, product in enumerate(self.products):
+            if product.remote:
+                rows.append(("item", i))
+        return rows
+
     def _draw_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         _rounded_frame(stdscr, y, x, h, w, curses.color_pair(12), f"✦  {self._t('picker_title')}")
         inner = max(10, w - 4)
@@ -1066,20 +1077,41 @@ class BuildTui:
         _add(stdscr, y + 2, xx, self._t("picker_hint"), curses.color_pair(10), inner)
         list_y = y + 4
         list_h = max(1, (y + h - 3) - list_y)
-        if self.picker_index < self.picker_off:
-            self.picker_off = self.picker_index
-        if self.picker_index >= self.picker_off + list_h:
-            self.picker_off = self.picker_index - list_h + 1
+        rows = self._picker_rows()
+        sel_row = 0
+        for i, (kind, payload) in enumerate(rows):
+            if kind == "item" and payload == self.picker_index:
+                sel_row = i
+                break
+        if sel_row < self.picker_off:
+            self.picker_off = sel_row
+        if sel_row >= self.picker_off + list_h:
+            self.picker_off = sel_row - list_h + 1
+        max_off = max(0, len(rows) - list_h)
+        if self.picker_off > max_off:
+            self.picker_off = max_off
         for i in range(list_h):
             idx = self.picker_off + i
-            if idx >= len(self.products):
+            if idx >= len(rows):
                 break
-            product = self.products[idx]
-            selected = idx == self.picker_index
+            kind, payload = rows[idx]
+            if kind == "head":
+                _add(
+                    stdscr,
+                    list_y + i,
+                    xx,
+                    self._t(str(payload)),
+                    curses.color_pair(15) | curses.A_DIM,
+                    inner,
+                )
+                continue
+            product_idx = int(payload)
+            product = self.products[product_idx]
+            selected = product_idx == self.picker_index
             attr = curses.color_pair(3) | curses.A_BOLD if selected else curses.color_pair(2)
             prefix = "▸ " if selected else "  "
             _add(stdscr, list_y + i, xx, clip(prefix + product.label, inner), attr, inner)
-            self.hits.append(Hit(Rect(list_y + i, xx, 1, inner), "pick", idx))
+            self.hits.append(Hit(Rect(list_y + i, xx, 1, inner), "pick", product_idx))
         self._draw_lang_bar(stdscr, y + h - 2, xx, inner)
 
     def _draw_build(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
