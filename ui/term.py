@@ -23,8 +23,8 @@ import termios
 import unicodedata
 from dataclasses import dataclass
 
-from logbuf import Cell, _cells_to_glyphs
-from report import Glyph
+from ui.logbuf import Cell, _cells_to_glyphs
+from core.report import Glyph
 
 _WHEEL_UP = getattr(curses, "BUTTON4_PRESSED", 0x10000)
 _WHEEL_DOWN = getattr(curses, "BUTTON5_PRESSED", 0x200000)

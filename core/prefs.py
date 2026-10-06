@@ -19,7 +19,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from i18n import LANGS
+from ui.i18n import LANGS
 
 TUI_DIR_NAME = ".miku-tui"
 PREFS_NAME = "prefs.json"

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import os
 
-from i18n_moe import lookup as moe_lookup
+from ui.i18n_moe import lookup as moe_lookup
 
 LANGS = ("en", "zh", "ja", "ru", "tr")
 LANG_CHIPS = (

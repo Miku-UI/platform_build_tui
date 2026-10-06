@@ -20,8 +20,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from logbuf import LogBuffer
-from source import (
+from ui.logbuf import LogBuffer
+from core.source import (
     CHECK_JOBS_DEFAULT,
     GIT_HTTPS,
     GIT_SSH,
@@ -37,7 +37,7 @@ from source import (
     local_paths,
     sync_argv,
 )
-from term import (
+from ui.term import (
     Hit,
     Rect,
     _WHEEL_UP,
@@ -50,8 +50,8 @@ from term import (
     dw,
     wrap_words,
 )
-from ctx import Page
-from widgets import chip_row, fill_btn, jobs_row, option_block, yes_no
+from ui.ctx import Page
+from ui.widgets import chip_row, fill_btn, jobs_row, option_block, yes_no
 
 SCM_HOME = "home"
 SCM_CHECK = "check"

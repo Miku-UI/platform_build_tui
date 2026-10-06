@@ -18,8 +18,8 @@ from __future__ import annotations
 
 import curses
 
-from logbuf import LogBuffer
-from term import Hit, Rect
+from ui.logbuf import LogBuffer
+from ui.term import Hit, Rect
 
 
 class Page:

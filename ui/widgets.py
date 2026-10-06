@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import curses
 
-from term import Hit, Rect, _add, clip, dw
+from ui.term import Hit, Rect, _add, clip, dw
 
 
 def yes_no(t) -> tuple[tuple[bool, str], tuple[bool, str]]:

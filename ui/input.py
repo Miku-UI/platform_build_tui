@@ -21,8 +21,8 @@ import shutil
 import subprocess
 import time
 
-from logbuf import Cell, LogBuffer
-from term import (
+from ui.logbuf import Cell, LogBuffer
+from ui.term import (
     Hit,
     Rect,
     _WHEEL_DOWN,

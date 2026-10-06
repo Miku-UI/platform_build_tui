@@ -30,8 +30,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from devices import Product
-from phase import MARKER_PREFIX
+from core.devices import Product
+from core.phase import MARKER_PREFIX
 
 MAKE_TARGET = "diva"
 

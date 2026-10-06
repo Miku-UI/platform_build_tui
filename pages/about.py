@@ -16,9 +16,9 @@ from __future__ import annotations
 
 import curses
 
-from art import about_art
-from ctx import Ctx, Page
-from term import _add, _rounded_frame, dw
+from ui.art import about_art
+from ui.ctx import Ctx, Page
+from ui.term import _add, _rounded_frame, dw
 
 
 class AboutPage(Page):

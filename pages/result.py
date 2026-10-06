@@ -16,8 +16,8 @@ from __future__ import annotations
 
 import curses
 
-from report import BuildReport, bar_widths, fmt_delta, fmt_duration, fmt_mb, fmt_size_delta
-from term import _glyphs_to_segs, _wrap_glyphs, dw, wrap_words
+from core.report import BuildReport, bar_widths, fmt_delta, fmt_duration, fmt_mb, fmt_size_delta
+from ui.term import _glyphs_to_segs, _wrap_glyphs, dw, wrap_words
 
 _STAGE_PAIR = {
     "prepare": 37,

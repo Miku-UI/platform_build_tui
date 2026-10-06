@@ -20,7 +20,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from devices import Product
+from core.devices import Product
 
 STATS_NAME = ".miku-tui-stats.json"
 

@@ -25,9 +25,9 @@ _TUI_DIR = Path(__file__).resolve().parent
 if str(_TUI_DIR) not in sys.path:
     sys.path.insert(0, str(_TUI_DIR))
 
-from builder import BuildConfig, run_cli  # noqa: E402
-from devices import android_top_from, default_release, discover_products, resolve_device  # noqa: E402
-from i18n import detect_lang, t  # noqa: E402
+from core.builder import BuildConfig, run_cli  # noqa: E402
+from core.devices import android_top_from, default_release, discover_products, resolve_device  # noqa: E402
+from ui.i18n import detect_lang, t  # noqa: E402
 from tui import CLEAN_FULL, CLEAN_INSTALL, CLEAN_NONE, run_tui  # noqa: E402
 
 

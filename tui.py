@@ -20,28 +20,28 @@ import socket
 import sys
 from pathlib import Path
 
-from art import SPARKS, banner_lines, logo_lines
-from ctx import Ctx, Page
-from devices import Product
-from i18n import LANG_CHIPS, detect_lang, t
-from input import (
+from ui.art import SPARKS, banner_lines, logo_lines
+from ui.ctx import Ctx, Page
+from core.devices import Product
+from ui.i18n import LANG_CHIPS, detect_lang, t
+from ui.input import (
     cancel_press,
     draw_log,
     draw_log_scrollbar,
     handle_mouse,
     handle_wheel,
 )
-from logbuf import Cell, LogBuffer
-from pages_about import AboutPage
-from pages_build import (
+from ui.logbuf import Cell, LogBuffer
+from pages.about import AboutPage
+from pages.build import (
     CLEAN_FULL,
     CLEAN_INSTALL,
     CLEAN_NONE,
     BuildPage,
 )
-from pages_scm import ScmPage
-from prefs import Prefs, load_prefs, save_prefs
-from session import (
+from pages.scm import ScmPage
+from core.prefs import Prefs, load_prefs, save_prefs
+from core.session import (
     accept_attach,
     client_gone,
     launch as launch_session,
@@ -50,8 +50,8 @@ from session import (
     take_tty,
     try_accept,
 )
-from sysinfo import HostMonitor, fmt_freq, fmt_pair
-from term import (
+from core.sysinfo import HostMonitor, fmt_freq, fmt_pair
+from ui.term import (
     Hit,
     Rect,
     _CLOSE_W,

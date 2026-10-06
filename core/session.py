@@ -29,7 +29,7 @@ import traceback
 from pathlib import Path
 from typing import Callable
 
-from prefs import tui_dir
+from core.prefs import tui_dir
 
 SOCK_NAME = "session.sock"
 LOCK_NAME = "session.lock"

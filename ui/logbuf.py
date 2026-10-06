@@ -18,7 +18,7 @@ import threading
 from collections import deque
 from dataclasses import dataclass
 
-from report import Glyph
+from core.report import Glyph
 
 
 @dataclass

@@ -21,15 +21,15 @@ import threading
 import time
 from pathlib import Path
 
-from builder import BuildConfig, BuildSession
-from devices import Product, resolve_device
-from logbuf import LogBuffer
-from pages_result import result_rows
-from phase import PhaseTracker
-from prefs import Prefs
-from report import BuildReport, build_report
-from sysinfo import read_miku_rom_version
-from term import (
+from core.builder import BuildConfig, BuildSession
+from core.devices import Product, resolve_device
+from ui.logbuf import LogBuffer
+from pages.result import result_rows
+from core.phase import PhaseTracker
+from core.prefs import Prefs
+from core.report import BuildReport, build_report
+from core.sysinfo import read_miku_rom_version
+from ui.term import (
     Hit,
     Rect,
     _WHEEL_UP,
@@ -42,8 +42,8 @@ from term import (
     clip,
     dw,
 )
-from ctx import Page
-from widgets import box_btn, fill_btn, jobs_row, option_block, yes_no
+from ui.ctx import Page
+from ui.widgets import box_btn, fill_btn, jobs_row, option_block, yes_no
 
 MODE_CONFIG = "config"
 MODE_PICKER = "picker"
