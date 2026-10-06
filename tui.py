@@ -57,6 +57,22 @@ from report import (
     fmt_mb,
     fmt_size_delta,
 )
+from source import (
+    CHECK_JOBS_DEFAULT,
+    GIT_HTTPS,
+    GIT_SSH,
+    SCOPE_ALL,
+    SCOPE_AOSP,
+    SCOPE_FORKS,
+    STATUS_AHEAD,
+    STATUS_BEHIND,
+    STATUS_DIVERGED,
+    CommandSession,
+    DiffRow,
+    check_projects,
+    local_paths,
+    sync_argv,
+)
 from sysinfo import HostMonitor, fmt_freq, fmt_pair, read_miku_rom_version
 
 MODE_CONFIG = "config"
@@ -69,13 +85,42 @@ TUI_VERSION = "1.0.0"
 
 # Visible page; independent of mode so a running build is not interrupted.
 TAB_BUILD = "build"
+TAB_SCM = "scm"
 TAB_ABOUT = "about"
-TABS = (TAB_BUILD, TAB_ABOUT)
+TABS = (TAB_BUILD, TAB_SCM, TAB_ABOUT)
 _TAB_PAGES = {
+    TAB_SCM: "_draw_scm",
     TAB_ABOUT: "_draw_about",
 }
 _TAB_CLOSE = {
+    TAB_SCM: "_close_scm",
     TAB_ABOUT: "_close_about",
+}
+
+SCM_HOME = "home"
+SCM_CHECK = "check"
+SCM_RESULT = "result"
+SCM_SYNC_CFG = "sync_cfg"
+SCM_SYNC = "sync"
+
+_SCM_HOME_ITEMS = (
+    ("check", "scm_check"),
+    ("check_offline", "scm_check_offline"),
+    ("sync", "scm_sync"),
+    ("settings", "scm_settings"),
+)
+_GIT_TRANSPORTS = (GIT_HTTPS, GIT_SSH)
+_SETTINGS_FOCUS = ("transport", "check_jobs", "apply", "cancel")
+_SCM_SYNC_FOCUS = ("sync_jobs", "sync_force", "sync_ignore", "sync_start")
+_SCM_STATUS_KEY = {
+    STATUS_AHEAD: "scm_status_ahead",
+    STATUS_BEHIND: "scm_status_behind",
+    STATUS_DIVERGED: "scm_status_diverged",
+}
+_SCM_STATUS_PAIR = {
+    STATUS_AHEAD: 4,
+    STATUS_BEHIND: 6,
+    STATUS_DIVERGED: 5,
 }
 
 _STAGE_PAIR = {
@@ -155,6 +200,17 @@ class Hit:
     rect: Rect
     action: str
     payload: object = None
+
+
+@dataclass
+class Dialog:
+    title_key: str
+    choices: tuple[tuple[str, str], ...] = ()
+    body_key: str = ""
+    focus: int = 0
+    kind: str = ""
+    git_transport: str = GIT_HTTPS
+    check_jobs: int = CHECK_JOBS_DEFAULT
 
 
 @dataclass
@@ -628,6 +684,32 @@ class BuildTui:
         self._steal: tuple | None = None
         self._devnull = -1
         self.host = HostMonitor(top)
+        self.scm_page = SCM_HOME
+        self.scm_home_focus = 0
+        self.scm_focus = 0
+        self.sync_jobs = 4
+        self.sync_force = False
+        self.sync_ignore = True
+        self.scm_log = LogBuffer()
+        self.scm_log_scroll = 0
+        self.scm_session: CommandSession | None = None
+        self.scm_status_key = ""
+        self.scm_status_args: dict[str, object] = {}
+        self.dialog: Dialog | None = None
+        self.scm_diffs: list[DiffRow] = []
+        self.scm_result_off = 0
+        self.scm_result_index = 0
+        self.scm_check_done = 0
+        self.scm_check_total = 0
+        self.scm_check_path = ""
+        self.scm_check_stop: threading.Event | None = None
+        self.scm_check_fetch = True
+        self.git_transport = prefs.git_transport if prefs.git_transport in _GIT_TRANSPORTS else GIT_HTTPS
+        self.check_jobs = prefs.check_jobs if prefs.check_jobs is not None else CHECK_JOBS_DEFAULT
+        self._scm_lock = threading.Lock()
+        self._scm_checking = False
+        self._scm_reaped = False
+        self._scroll_attr = "log_scroll"
 
     def _t(self, key: str, **kwargs: object) -> str:
         return t(self.lang, key, voice=self.voice, **kwargs)
@@ -761,6 +843,20 @@ class BuildTui:
             self.host.tick(force_disk=True)
         if self._stopping is not None and not self._stopping.running:
             self._stopping = None
+        scm = self.scm_session
+        if self.scm_page == SCM_SYNC and scm is not None and not scm.running and not self._scm_reaped:
+            self._scm_reaped = True
+            code = scm.returncode
+            scm.close()
+            if scm.stopped:
+                self.scm_status_key = "stopped"
+                self.scm_status_args = {}
+            elif code == 0:
+                self.scm_status_key = "scm_sync_ok"
+                self.scm_status_args = {}
+            else:
+                self.scm_status_key = "scm_sync_fail"
+                self.scm_status_args = {"code": code}
 
     def _draw(self, stdscr: curses.window) -> None:
         if _sync_curses_size(stdscr):
@@ -770,6 +866,7 @@ class BuildTui:
         self.hits = []
         self._scroll_geom = Rect(0, 0, 0, 0)
         self._log_geom = Rect(0, 0, 0, 0)
+        self._scroll_attr = "log_scroll"
         rows, cols = stdscr.getmaxyx()
         if rows < 16 or cols < 60:
             _add(stdscr, 0, 0, self._t("term_too_small"), curses.color_pair(2) | curses.A_BOLD, cols)
@@ -791,6 +888,10 @@ class BuildTui:
             self._draw_config(stdscr, cy, cx, ch, cw)
         self._draw_tab_bar(stdscr, cy, cx, cw)
         self._draw_card_chrome(stdscr, cy, cx, cw)
+        if self.dialog is not None and self.tab == TAB_SCM:
+            keep = [hit for hit in self.hits if hit.action in ("tab", "minimize", "quit")]
+            self.hits = keep
+            self._draw_dialog(stdscr, cy, cx, ch, cw)
         stdscr.refresh()
 
     def _draw_banner(self, stdscr: curses.window, rows: int, width: int) -> None:
@@ -909,7 +1010,7 @@ class BuildTui:
             _add(stdscr, row, xx, self._t("jobs"), curses.color_pair(15) | curses.A_DIM, inner)
             row += 1
         if row < limit:
-            self._jobs_row(stdscr, row, xx, inner)
+            self._jobs_row(stdscr, row, xx, inner, self.jobs, "jobs", "jobs")
             row += 2
         row = self._option_block(
             stdscr, row, xx, inner, limit, self._t("gapps"), self._yes_no(), self.gapps, "gapps"
@@ -961,9 +1062,17 @@ class BuildTui:
         self._draw_lang_bar(stdscr, y + h - 2, xx, inner, voices=True)
 
     def _has_focus(self, name: str) -> bool:
+        if self.tab == TAB_SCM:
+            return 0 <= self.scm_focus < len(_SCM_SYNC_FOCUS) and _SCM_SYNC_FOCUS[self.scm_focus] == name
         return 0 <= self.focus < len(_FOCUS) and _FOCUS[self.focus] == name
 
     def _set_focus(self, name: str) -> None:
+        if self.tab == TAB_SCM:
+            try:
+                self.scm_focus = _SCM_SYNC_FOCUS.index(name)
+            except ValueError:
+                return
+            return
         try:
             self.focus = _FOCUS.index(name)
         except ValueError:
@@ -976,17 +1085,28 @@ class BuildTui:
         key, args = self.phase.snapshot()
         return self._t(key, **args)
 
-    def _jobs_row(self, stdscr: curses.window, y: int, x: int, width: int) -> None:
-        focused = self._has_focus("jobs")
+    def _jobs_row(
+        self,
+        stdscr: curses.window,
+        y: int,
+        x: int,
+        width: int,
+        value: int,
+        action: str,
+        focus: str,
+        focused: bool | None = None,
+    ) -> None:
+        if focused is None:
+            focused = self._has_focus(focus)
         minus_a = curses.color_pair(3) if focused else curses.color_pair(12)
         plus_a = minus_a
         _add(stdscr, y, x, "  −  ", minus_a | curses.A_BOLD, 5)
-        self.hits.append(Hit(Rect(y, x, 1, 5), "jobs", -1))
-        num = f"{self.jobs:^5d}"
+        self.hits.append(Hit(Rect(y, x, 1, 5), action, -1))
+        num = f"{value:^5d}"
         _add(stdscr, y, x + 6, num, curses.color_pair(11) | curses.A_BOLD, 5)
-        self.hits.append(Hit(Rect(y, x + 6, 1, 5), "focus", "jobs"))
+        self.hits.append(Hit(Rect(y, x + 6, 1, 5), "focus", focus))
         _add(stdscr, y, x + 12, "  +  ", plus_a | curses.A_BOLD, 5)
-        self.hits.append(Hit(Rect(y, x + 12, 1, 5), "jobs", 1))
+        self.hits.append(Hit(Rect(y, x + 12, 1, 5), action, 1))
 
     def _option_block(
         self,
@@ -1000,10 +1120,12 @@ class BuildTui:
         current: object,
         action: str,
         gap: int = 1,
+        title_attr: int | None = None,
     ) -> int:
         """Dim title plus a chip row. Returns the next row after optional gap."""
         if row < limit:
-            _add(stdscr, row, x, title, curses.color_pair(15) | curses.A_DIM, width)
+            attr = title_attr if title_attr is not None else curses.color_pair(15) | curses.A_DIM
+            _add(stdscr, row, x, title, attr, width)
             row += 1
         if row < limit:
             self._chip_row(stdscr, row, x, width, options, current, action)
@@ -1070,7 +1192,16 @@ class BuildTui:
         self.hits.append(Hit(Rect(y, x, h, w), action))
 
     def _show_close(self) -> bool:
-        return not (self.tab == TAB_BUILD and self.mode == MODE_BUILD)
+        if self.tab == TAB_BUILD and self.mode == MODE_BUILD:
+            return False
+        if (
+            self.tab == TAB_SCM
+            and self.scm_page == SCM_SYNC
+            and self.scm_session is not None
+            and self.scm_session.running
+        ):
+            return False
+        return True
 
     def _chrome_reserve(self) -> int:
         if self._show_close():
@@ -1128,6 +1259,500 @@ class BuildTui:
 
     def _close_about(self) -> bool:
         return False
+
+    def _draw_scm(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        if self.scm_page == SCM_CHECK:
+            self._draw_scm_check(stdscr, y, x, h, w)
+        elif self.scm_page == SCM_RESULT:
+            self._draw_scm_result(stdscr, y, x, h, w)
+        elif self.scm_page == SCM_SYNC_CFG:
+            self._draw_scm_sync_cfg(stdscr, y, x, h, w)
+        elif self.scm_page == SCM_SYNC:
+            self._draw_scm_sync(stdscr, y, x, h, w)
+        else:
+            self._draw_scm_home(stdscr, y, x, h, w)
+
+    def _draw_scm_home(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        _rounded_frame(stdscr, y, x, h, w, curses.color_pair(12), f"✦  {self._t('scm_frame')}", self._chrome_reserve())
+        inner = max(10, w - 4)
+        xx = x + 2
+        row = y + 3
+        for i, (name, key) in enumerate(_SCM_HOME_ITEMS):
+            if row >= y + h - 3:
+                break
+            selected = i == self.scm_home_focus
+            attr = curses.color_pair(3) | curses.A_BOLD if selected else curses.color_pair(12)
+            label = clip(("▸ " if selected else "  ") + self._t(key), inner)
+            _add(stdscr, row, xx, label, attr, inner)
+            self.hits.append(Hit(Rect(row, xx, 1, inner), "scm_home", name))
+            row += 2
+        if self.scm_status_key:
+            _add(
+                stdscr,
+                y + h - 4,
+                xx,
+                self._t(self.scm_status_key, **self.scm_status_args),
+                curses.color_pair(6),
+                inner,
+            )
+        self._draw_lang_bar(stdscr, y + h - 2, xx, inner)
+
+    def _draw_scm_check(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        _rounded_frame(stdscr, y, x, h, w, curses.color_pair(12), f"✦  {self._t('scm_frame')}", self._chrome_reserve())
+        inner = max(10, w - 4)
+        xx = x + 2
+        with self._scm_lock:
+            done = self.scm_check_done
+            total = self.scm_check_total
+            path = self.scm_check_path
+        top = y + 2
+        bottom = y + h - 3
+        area_h = max(0, bottom - top + 1)
+        label = self._t("scm_checking")
+        bar_w = min(inner, max(12, inner - 4))
+        count = f"{done}/{total}" if total else "0/0"
+        block = [label, "", "", count]
+        if path:
+            block.append(clip(path, inner))
+        y0 = top + max(0, (area_h - len(block)) // 2)
+        for i, line in enumerate(block):
+            yy = y0 + i
+            if yy > bottom:
+                break
+            if i == 2:
+                frac = done / total if total else 0
+                fill = min(bar_w, int(bar_w * frac))
+                bar = "█" * fill + "░" * (bar_w - fill)
+                lx = xx + max(0, (inner - bar_w) // 2)
+                _add(stdscr, yy, lx, bar, curses.color_pair(11) | curses.A_BOLD, bar_w)
+                continue
+            lx = xx + max(0, (inner - dw(line)) // 2)
+            attr = curses.color_pair(11) | curses.A_BOLD if i == 0 else curses.color_pair(10)
+            _add(stdscr, yy, lx, line, attr, max(1, xx + inner - lx))
+        self._draw_lang_bar(stdscr, y + h - 2, xx, inner)
+
+    def _draw_scm_result(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        _rounded_frame(stdscr, y, x, h, w, curses.color_pair(12), f"✦  {self._t('scm_frame')}", self._chrome_reserve())
+        inner = max(10, w - 4)
+        xx = x + 2
+        _add(stdscr, y + 2, xx, self._t("scm_diff_title"), curses.color_pair(15) | curses.A_DIM, inner)
+        list_y = y + 4
+        list_h = max(1, (y + h - 3) - list_y)
+        with self._scm_lock:
+            rows = list(self.scm_diffs)
+        self._log_geom = Rect(list_y, xx, list_h, inner)
+        if not rows:
+            _add(stdscr, list_y, xx, self._t("scm_check_clean"), curses.color_pair(10), inner)
+            self._draw_lang_bar(stdscr, y + h - 2, xx, inner)
+            return
+        n = len(rows)
+        if self.scm_result_index >= n:
+            self.scm_result_index = n - 1
+        if self.scm_result_index < 0:
+            self.scm_result_index = 0
+        if self.scm_result_index < self.scm_result_off:
+            self.scm_result_off = self.scm_result_index
+        if self.scm_result_index >= self.scm_result_off + list_h:
+            self.scm_result_off = self.scm_result_index - list_h + 1
+        max_off = max(0, n - list_h)
+        if self.scm_result_off > max_off:
+            self.scm_result_off = max_off
+        if self.scm_result_off < 0:
+            self.scm_result_off = 0
+        for i in range(list_h):
+            idx = self.scm_result_off + i
+            if idx >= n:
+                break
+            item = rows[idx]
+            selected = idx == self.scm_result_index
+            status = self._t(_SCM_STATUS_KEY.get(item.status, "result_unknown"))
+            pair = _SCM_STATUS_PAIR.get(item.status, 10)
+            status_w = dw(status)
+            gap = 2
+            path_w = max(4, inner - status_w - gap)
+            prefix = "▸ " if selected else "  "
+            path = clip(prefix + item.path, path_w)
+            pad = max(0, inner - dw(path) - status_w)
+            if selected:
+                line = path + " " * pad + status
+                _add(stdscr, list_y + i, xx, clip(line, inner), curses.color_pair(3) | curses.A_BOLD, inner)
+            else:
+                _add(stdscr, list_y + i, xx, path, curses.color_pair(2), path_w)
+                _add(
+                    stdscr,
+                    list_y + i,
+                    xx + dw(path) + pad,
+                    status,
+                    curses.color_pair(pair) | curses.A_BOLD,
+                    status_w,
+                )
+            self.hits.append(Hit(Rect(list_y + i, xx, 1, inner), "scm_pick", idx))
+        self._draw_lang_bar(stdscr, y + h - 2, xx, inner)
+
+    def _draw_scm_sync_cfg(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        _rounded_frame(stdscr, y, x, h, w, curses.color_pair(12), f"✦  {self._t('scm_frame')}", self._chrome_reserve())
+        inner = max(10, w - 4)
+        xx = x + 2
+        row = y + 2
+        limit = y + h - 6
+        _add(stdscr, row, xx, self._sync_preview(), curses.color_pair(2) | curses.A_DIM, inner)
+        row += 2
+        if row < limit:
+            _add(stdscr, row, xx, self._t("scm_sync_jobs"), curses.color_pair(15) | curses.A_DIM, inner)
+            row += 1
+        if row < limit:
+            self._jobs_row(stdscr, row, xx, inner, self.sync_jobs, "sync_jobs", "sync_jobs")
+            row += 2
+        row = self._option_block(
+            stdscr,
+            row,
+            xx,
+            inner,
+            limit,
+            self._t("scm_sync_force"),
+            self._yes_no(),
+            self.sync_force,
+            "sync_force",
+            title_attr=curses.color_pair(5) | curses.A_BOLD,
+        )
+        self._option_block(
+            stdscr,
+            row,
+            xx,
+            inner,
+            limit,
+            self._t("scm_sync_ignore"),
+            self._yes_no(),
+            self.sync_ignore,
+            "sync_ignore",
+            gap=0,
+        )
+        if self.scm_status_key:
+            _add(
+                stdscr,
+                y + h - 6,
+                xx,
+                self._t(self.scm_status_key, **self.scm_status_args),
+                curses.color_pair(6),
+                inner,
+            )
+        start_label = self._t("scm_sync_start")
+        btn_w = min(inner, max(22, dw(start_label) + 10))
+        btn_x = x + max(0, (w - btn_w) // 2)
+        btn_y = y + h - 5
+        attr = curses.color_pair(3) | curses.A_BOLD
+        if self._has_focus("sync_start"):
+            attr = curses.color_pair(3) | curses.A_BOLD
+        self._fill_btn(stdscr, btn_y, btn_x, 3, btn_w, start_label, attr, "sync_start")
+        self._draw_lang_bar(stdscr, y + h - 2, xx, inner)
+
+    def _draw_scm_sync(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        session = self.scm_session
+        elapsed = ""
+        if session is not None:
+            end = session.finished_at or time.time()
+            elapsed = "  " + _fmt_elapsed(end - session.started_at)
+        running = session is not None and session.running
+        if running:
+            title = self._t("scm_syncing")
+        elif self.scm_status_key:
+            title = self._t(self.scm_status_key, **self.scm_status_args)
+        else:
+            title = self._t("done")
+        room = max(0, w - 4 - dw(elapsed))
+        title = clip(title, room)
+        _rounded_frame(
+            stdscr, y, x, h, w, curses.color_pair(12), f"✦  {title}{elapsed}", self._chrome_reserve()
+        )
+        inner = max(10, w - 4)
+        xx = x + 2
+        _add(stdscr, y + 2, xx, self._sync_preview(), curses.color_pair(10), inner)
+        log_top = y + 4
+        log_h = max(3, h - 10)
+        log_w = inner
+        self._log_geom = Rect(log_top, xx, log_h, log_w)
+        self._scroll_attr = "scm_log_scroll"
+        self.scm_log.set_size(max(2, log_h), max(20, log_w))
+        self._draw_log(stdscr, log_top, xx, log_h, log_w, log=self.scm_log, scroll_attr="scm_log_scroll")
+        self._draw_log_scrollbar(stdscr, log_top, x + w - 2, log_h)
+        if session is not None:
+            session.set_winsize(max(2, log_h), max(20, log_w))
+        btn = self._t("scm_sync_start") if running else self._t("back")
+        btn_w = min(inner, max(16, dw(btn) + 10))
+        btn_x = x + max(0, (w - btn_w) // 2)
+        btn_y = y + h - 5
+        if running:
+            left = max(0, (btn_w - dw(btn)) // 2)
+            right = max(0, btn_w - left - dw(btn))
+            dim = curses.color_pair(10)
+            for i in range(3):
+                text = (" " * left + btn + " " * right) if i == 1 else " " * btn_w
+                _add(stdscr, btn_y + i, btn_x, text, dim, btn_w)
+        else:
+            self._fill_btn(stdscr, btn_y, btn_x, 3, btn_w, btn, curses.color_pair(9) | curses.A_BOLD, "scm_back")
+        self._draw_lang_bar(stdscr, y + h - 2, xx, inner)
+
+    def _draw_dialog(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        dlg = self.dialog
+        if dlg is None:
+            return
+        if dlg.kind == "settings":
+            self._draw_settings_dialog(stdscr, y, x, h, w)
+            return
+        title = self._t(dlg.title_key)
+        wrap_w = max(8, w - 8)
+        body_lines: list[str] = []
+        if dlg.body_key:
+            body_lines = wrap_words(self._t(dlg.body_key), wrap_w)
+        choice_rows = [wrap_words(self._t(key), max(4, wrap_w - 2)) for _payload, key in dlg.choices]
+        text_w = max(
+            [dw(title), *(dw(line) for line in body_lines), *(dw(line) + 2 for rows in choice_rows for line in rows)],
+            default=10,
+        )
+        box_w = min(w - 2, max(24, text_w + 4))
+        box_h = 3 + len(body_lines) + (1 if body_lines else 0) + sum(len(rows) for rows in choice_rows) + 1
+        box_h = min(max(5, box_h), h - 2)
+        by = y + max(1, (h - box_h) // 2)
+        bx = x + max(1, (w - box_w) // 2)
+        fill_a = curses.color_pair(7)
+        for i in range(box_h):
+            _add(stdscr, by + i, bx, " " * box_w, fill_a, box_w)
+        _rounded_frame(stdscr, by, bx, box_h, box_w, curses.color_pair(12), f"✦  {title}", 0)
+        cy = by + 1
+        cx = bx + 2
+        cw = max(1, box_w - 4)
+        for line in body_lines:
+            cy += 1
+            if cy >= by + box_h - 1:
+                break
+            _add(stdscr, cy, cx, line, curses.color_pair(2), cw)
+        if body_lines:
+            cy += 1
+        for i, ((payload, _key), rows) in enumerate(zip(dlg.choices, choice_rows)):
+            selected = i == dlg.focus
+            if dlg.kind == "force" and payload == "force_ok":
+                attr = curses.color_pair(8) | curses.A_BOLD if selected else curses.color_pair(5)
+            else:
+                attr = curses.color_pair(3) | curses.A_BOLD if selected else curses.color_pair(2)
+            first = min(cy + 1, by + box_h - 2)
+            for j, line in enumerate(rows):
+                cy += 1
+                if cy >= by + box_h - 1:
+                    break
+                prefix = "▸ " if selected and j == 0 else "  "
+                _add(stdscr, cy, cx, clip(prefix + line, cw), attr, cw)
+            last = cy
+            self.hits.append(Hit(Rect(first, cx, max(1, last - first + 1), cw), "dialog", payload))
+
+    def _draw_settings_dialog(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        dlg = self.dialog
+        if dlg is None:
+            return
+        title = self._t("scm_settings")
+        transport_title = self._t("scm_git_transport")
+        jobs_title = self._t("scm_check_jobs")
+        apply_l = f" {self._t('apply')} "
+        cancel_l = f" {self._t('cancel')} "
+        https_l = " HTTPS "
+        ssh_l = " SSH "
+        box_w = min(
+            w - 2,
+            max(
+                36,
+                dw(title) + 8,
+                dw(transport_title) + 4,
+                dw(jobs_title) + 4,
+                dw(https_l) + dw(ssh_l) + 3,
+                dw(apply_l) + dw(cancel_l) + 3,
+            )
+            + 4,
+        )
+        box_h = min(13, h - 2)
+        by = y + max(1, (h - box_h) // 2)
+        bx = x + max(1, (w - box_w) // 2)
+        fill_a = curses.color_pair(7)
+        for i in range(box_h):
+            _add(stdscr, by + i, bx, " " * box_w, fill_a, box_w)
+        _rounded_frame(stdscr, by, bx, box_h, box_w, curses.color_pair(12), f"✦  {title}", 0)
+        cx = bx + 2
+        cw = max(1, box_w - 4)
+        row = by + 2
+        limit = by + box_h - 2
+        if row < limit:
+            _add(stdscr, row, cx, transport_title, curses.color_pair(15) | curses.A_DIM, cw)
+            row += 1
+        if row < limit:
+            self._chip_row(
+                stdscr,
+                row,
+                cx,
+                cw,
+                ((GIT_HTTPS, "HTTPS"), (GIT_SSH, "SSH")),
+                dlg.git_transport,
+                "settings_transport",
+            )
+            row += 2
+        if row < limit:
+            _add(stdscr, row, cx, jobs_title, curses.color_pair(15) | curses.A_DIM, cw)
+            row += 1
+        if row < limit:
+            self._jobs_row(
+                stdscr,
+                row,
+                cx,
+                cw,
+                dlg.check_jobs,
+                "settings_jobs",
+                "check_jobs",
+                focused=dlg.focus == 1,
+            )
+        btn_y = by + box_h - 2
+        ax = cx
+        apply_a = curses.color_pair(3) | curses.A_BOLD if dlg.focus == 2 else curses.color_pair(10)
+        cancel_a = curses.color_pair(3) | curses.A_BOLD if dlg.focus == 3 else curses.color_pair(10)
+        _add(stdscr, btn_y, ax, apply_l, apply_a, dw(apply_l))
+        self.hits.append(Hit(Rect(btn_y, ax, 1, dw(apply_l)), "dialog", "apply"))
+        ax += dw(apply_l) + 2
+        _add(stdscr, btn_y, ax, cancel_l, cancel_a, dw(cancel_l))
+        self.hits.append(Hit(Rect(btn_y, ax, 1, dw(cancel_l)), "dialog", "cancel"))
+
+    def _sync_preview(self) -> str:
+        parts = [f"repo sync -j{self.sync_jobs}"]
+        if self.sync_force:
+            parts.append("--force-checkout")
+        if not self.sync_ignore:
+            parts.append("--fail-fast")
+        return " ".join(parts)
+
+    def _close_scm(self) -> bool:
+        if self.dialog is not None:
+            self.dialog = None
+            return True
+        if self.scm_page == SCM_CHECK:
+            self._cancel_check()
+            self.scm_page = SCM_HOME
+            return True
+        if self.scm_page == SCM_RESULT:
+            self.scm_page = SCM_HOME
+            return True
+        if self.scm_page == SCM_SYNC_CFG:
+            self.scm_page = SCM_HOME
+            return True
+        if self.scm_page == SCM_SYNC:
+            if self.scm_session is not None and self.scm_session.running:
+                return True
+            self.scm_page = SCM_HOME
+            return True
+        return False
+
+    def _cancel_check(self) -> None:
+        if self.scm_check_stop is not None:
+            self.scm_check_stop.set()
+        self._scm_checking = False
+
+    def _open_scope_dialog(self, fetch: bool = True) -> None:
+        if not local_paths(self.top):
+            self.scm_status_key = "scm_no_repo"
+            self.scm_status_args = {}
+            return
+        self.scm_status_key = ""
+        self.scm_check_fetch = fetch
+        self.dialog = Dialog(
+            title_key="scm_scope_title",
+            choices=(
+                (SCOPE_FORKS, "scm_scope_forks"),
+                (SCOPE_AOSP, "scm_scope_aosp"),
+                (SCOPE_ALL, "scm_scope_all"),
+                ("cancel", "cancel"),
+            ),
+            kind="scope",
+        )
+
+    def _open_force_dialog(self) -> None:
+        self.dialog = Dialog(
+            title_key="scm_sync_warn_title",
+            body_key="scm_sync_warn_body",
+            choices=(
+                ("force_ok", "scm_sync_warn_ok"),
+                ("cancel", "cancel"),
+            ),
+            kind="force",
+        )
+
+    def _open_settings_dialog(self) -> None:
+        self.dialog = Dialog(
+            title_key="scm_settings",
+            kind="settings",
+            git_transport=self.git_transport if self.git_transport in _GIT_TRANSPORTS else GIT_HTTPS,
+            check_jobs=max(1, min(256, self.check_jobs)),
+        )
+
+    def _start_check(self, scope: str) -> None:
+        fetch = self.scm_check_fetch
+        transport = self.git_transport if self.git_transport in _GIT_TRANSPORTS else GIT_HTTPS
+        workers = max(1, min(256, self.check_jobs))
+        self._cancel_check()
+        stop = threading.Event()
+        self.scm_check_stop = stop
+        self.scm_check_done = 0
+        self.scm_check_total = 1
+        self.scm_check_path = ""
+        self.scm_diffs = []
+        self.scm_result_off = 0
+        self.scm_result_index = 0
+        self._scm_checking = True
+        self.scm_page = SCM_CHECK
+
+        def on_progress(done: int, total: int, path: str, event: threading.Event = stop) -> None:
+            if event.is_set():
+                return
+            with self._scm_lock:
+                self.scm_check_done = done
+                self.scm_check_total = max(total, 1)
+                self.scm_check_path = path
+
+        def worker() -> None:
+            diffs = check_projects(
+                self.top,
+                scope,
+                on_progress=on_progress,
+                stop=stop,
+                fetch=fetch,
+                transport=transport,
+                workers=workers,
+            )
+            if stop.is_set():
+                return
+            with self._scm_lock:
+                self.scm_diffs = diffs
+                self.scm_check_done = max(self.scm_check_done, self.scm_check_total)
+                self.scm_check_path = ""
+                self._scm_checking = False
+                self.scm_page = SCM_RESULT
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _start_sync(self) -> None:
+        try:
+            argv = sync_argv(self.top, self.sync_jobs, self.sync_force, not self.sync_ignore)
+        except FileNotFoundError:
+            self.scm_status_key = "scm_no_repo"
+            self.scm_status_args = {}
+            return
+        log = LogBuffer()
+        self.scm_log = log
+        self.scm_log_scroll = 0
+        self._wrap_key = None
+        self.scm_status_key = ""
+        self.scm_status_args = {}
+        session = CommandSession(self.top, argv, on_data=log.feed)
+        self.scm_session = session
+        self._scm_reaped = False
+        self.scm_page = SCM_SYNC
+        session.start()
+        rows, cols = self._stdscr.getmaxyx() if self._stdscr is not None else (24, 80)
+        _left, _gap, _cy, _cx, ch, cw = _panel_geom(rows, cols)
+        session.set_winsize(max(8, ch - 8), max(20, cw - 4))
 
     def _close_page(self) -> None:
         if self.tab != TAB_BUILD:
@@ -1277,6 +1902,7 @@ class BuildTui:
         log_h = max(3, h - 10)
         log_w = inner
         self._log_geom = Rect(log_top, xx, log_h, log_w)
+        self._scroll_attr = "log_scroll"
         self.log.set_size(max(2, log_h), max(20, log_w))
         self._draw_log(stdscr, log_top, xx, log_h, log_w)
         self._draw_log_scrollbar(stdscr, log_top, x + w - 2, log_h)
@@ -1421,10 +2047,21 @@ class BuildTui:
                 blank()
         return rows
 
-    def _draw_log(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
-        key = (self.log.generation, w)
+    def _draw_log(
+        self,
+        stdscr: curses.window,
+        y: int,
+        x: int,
+        h: int,
+        w: int,
+        *,
+        log: LogBuffer | None = None,
+        scroll_attr: str = "log_scroll",
+    ) -> None:
+        buf = log if log is not None else self.log
+        key = (id(buf), buf.generation, w)
         if self._wrap_key != key:
-            committed, current, table, inplace = self.log.snapshot()
+            committed, current, table, inplace = buf.snapshot()
             wrapped: list[list[Cell]] = []
             for line in committed:
                 wrapped.extend(wrap_cells(line, w))
@@ -1439,11 +2076,13 @@ class BuildTui:
             self._wrap_key = key
         wrapped = self._wrapped
         max_off = max(0, len(wrapped) - h)
-        if self.log_scroll <= 0:
+        scroll = getattr(self, scroll_attr)
+        if scroll <= 0:
             start = max(0, len(wrapped) - h)
         else:
-            self.log_scroll = min(self.log_scroll, max_off)
-            start = max(0, len(wrapped) - h - self.log_scroll)
+            scroll = min(scroll, max_off)
+            setattr(self, scroll_attr, scroll)
+            start = max(0, len(wrapped) - h - scroll)
         self._view_start = start
         view = wrapped[start : start + h]
         sel = self._sel_range()
@@ -1506,7 +2145,7 @@ class BuildTui:
         thumb_y = my - geom.y - self._scroll_drag
         start = _start_from_thumb(thumb_y, content, geom.h, geom.h)
         # log_scroll is counted from the tail so 0 keeps following new output.
-        self.log_scroll = max(0, content - geom.h) - start
+        setattr(self, getattr(self, "_scroll_attr", "log_scroll"), max(0, content - geom.h) - start)
 
     def _hit_at(self, y: int, x: int) -> Hit | None:
         for hit in reversed(self.hits):
@@ -1562,10 +2201,9 @@ class BuildTui:
             self._begin_scroll_drag(my)
             self._cancel_press()
             return
-        in_log = (
-            self.tab == TAB_BUILD
-            and self.mode in (MODE_BUILD, MODE_DONE)
-            and self._log_geom.contains(my, mx)
+        in_log = self._log_geom.contains(my, mx) and (
+            (self.tab == TAB_BUILD and self.mode in (MODE_BUILD, MODE_DONE))
+            or (self.tab == TAB_SCM and self.scm_page == SCM_SYNC)
         )
         if self._selecting and (pressed or report):
             pos = self._log_pos(my, mx, clamp=True)
@@ -1620,6 +2258,11 @@ class BuildTui:
                 self._fire_click(hit.action, hit.payload)
 
     def _wheel(self, delta: int) -> None:
+        if self.dialog is not None and self.tab == TAB_SCM:
+            return
+        if self.tab == TAB_SCM:
+            self._wheel_scm(delta)
+            return
         if self.tab != TAB_BUILD:
             return
         if self.mode == MODE_PICKER:
@@ -1632,6 +2275,24 @@ class BuildTui:
         if self.mode in (MODE_BUILD, MODE_DONE):
             max_off = max(0, len(self._wrapped) - max(1, self._log_geom.h))
             self.log_scroll = min(max(0, self.log_scroll - delta), max_off)
+
+    def _move_scm_result(self, delta: int) -> None:
+        with self._scm_lock:
+            n = len(self.scm_diffs)
+        if n <= 0:
+            self.scm_result_index = 0
+            return
+        self.scm_result_index = min(max(0, self.scm_result_index + delta), n - 1)
+
+    def _wheel_scm(self, delta: int) -> None:
+        if self.scm_page == SCM_RESULT:
+            self._move_scm_result(delta)
+            return
+        if self.scm_page == SCM_SYNC:
+            max_off = max(0, len(self._wrapped) - max(1, self._log_geom.h))
+            self.scm_log_scroll = min(max(0, self.scm_log_scroll - delta), max_off)
+        elif self.scm_page == SCM_HOME:
+            self.scm_home_focus = min(max(0, self.scm_home_focus + (1 if delta > 0 else -1)), len(_SCM_HOME_ITEMS) - 1)
 
     def _log_pos(self, y: int, x: int, clamp: bool) -> tuple[int, int] | None:
         geom = self._log_geom
@@ -1690,6 +2351,8 @@ class BuildTui:
                 self._action("stop_or_back")
                 return False
             return True
+        if self.dialog is not None and self.tab == TAB_SCM:
+            return self._key_dialog(ch)
         if self.tab != TAB_BUILD:
             return self._key_other_tab(ch)
         if self.mode == MODE_PICKER:
@@ -1704,8 +2367,168 @@ class BuildTui:
         if ch in (ord("q"), ord("Q"), 27):
             self._action("quit")
             return self._leave
+        if self.tab == TAB_SCM and self._key_scm(ch):
+            return False
         if ch in (curses.KEY_LEFT, curses.KEY_RIGHT):
             self._cycle_tab(-1 if ch == curses.KEY_LEFT else 1)
+        return False
+
+    def _key_dialog(self, ch: int) -> bool:
+        dlg = self.dialog
+        if dlg is None:
+            return False
+        if ch in (ord("q"), ord("Q"), 27):
+            self._action("dialog", "cancel")
+            return self._leave
+        if dlg.kind == "settings":
+            return self._key_settings_dialog(ch)
+        n = len(dlg.choices)
+        if n == 0:
+            return False
+        if ch in (curses.KEY_UP,):
+            dlg.focus = (dlg.focus - 1) % n
+        elif ch in (curses.KEY_DOWN, 9):
+            dlg.focus = (dlg.focus + 1) % n
+        elif ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
+            self._action("dialog", dlg.choices[dlg.focus][0])
+        elif ch in (curses.KEY_LEFT, curses.KEY_RIGHT):
+            self._cycle_tab(-1 if ch == curses.KEY_LEFT else 1)
+        return False
+
+    def _key_settings_dialog(self, ch: int) -> bool:
+        dlg = self.dialog
+        if dlg is None:
+            return False
+        n = len(_SETTINGS_FOCUS)
+        if ch in (curses.KEY_UP, getattr(curses, "KEY_BTAB", 353)):
+            dlg.focus = (dlg.focus - 1) % n
+            return False
+        if ch in (curses.KEY_DOWN, 9):
+            dlg.focus = (dlg.focus + 1) % n
+            return False
+        name = _SETTINGS_FOCUS[dlg.focus] if 0 <= dlg.focus < n else "transport"
+        if name == "transport" and ch in (curses.KEY_LEFT, curses.KEY_RIGHT, ord(" "), curses.KEY_ENTER, 10, 13):
+            dlg.git_transport = _cycle(_GIT_TRANSPORTS, dlg.git_transport, ch)
+            return False
+        if name == "check_jobs":
+            if ch in (curses.KEY_LEFT, ord("-")):
+                dlg.check_jobs = max(1, dlg.check_jobs - 1)
+            elif ch in (curses.KEY_RIGHT, ord("+"), ord("=")):
+                dlg.check_jobs = min(256, dlg.check_jobs + 1)
+            elif ch in (curses.KEY_BACKSPACE, 127, 8):
+                dlg.check_jobs = max(1, dlg.check_jobs // 10)
+            elif ord("0") <= ch <= ord("9"):
+                dlg.check_jobs = min(256, dlg.check_jobs * 10 + (ch - ord("0")))
+            return False
+        if ch in (curses.KEY_LEFT,):
+            if name == "cancel":
+                dlg.focus = 2
+            elif name == "apply":
+                dlg.focus = 1
+            return False
+        if ch in (curses.KEY_RIGHT,) and name == "apply":
+            dlg.focus = 3
+            return False
+        if ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
+            if name == "apply":
+                self._action("dialog", "apply")
+            elif name == "cancel":
+                self._action("dialog", "cancel")
+        return False
+
+    def _key_scm(self, ch: int) -> bool:
+        if self.scm_page == SCM_HOME:
+            if ch in (curses.KEY_UP,):
+                self.scm_home_focus = max(0, self.scm_home_focus - 1)
+                return True
+            if ch in (curses.KEY_DOWN, 9):
+                self.scm_home_focus = min(len(_SCM_HOME_ITEMS) - 1, self.scm_home_focus + 1)
+                return True
+            if ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
+                self._action("scm_home", _SCM_HOME_ITEMS[self.scm_home_focus][0])
+                return True
+            return False
+        if self.scm_page == SCM_RESULT:
+            if ch in (curses.KEY_UP, _WHEEL_UP):
+                self._move_scm_result(-1)
+                return True
+            if ch in (curses.KEY_DOWN,):
+                self._move_scm_result(1)
+                return True
+            if ch in (curses.KEY_PPAGE,):
+                self._move_scm_result(-10)
+                return True
+            if ch in (curses.KEY_NPAGE,):
+                self._move_scm_result(10)
+                return True
+            if ch in (curses.KEY_HOME,):
+                self.scm_result_index = 0
+                return True
+            if ch in (curses.KEY_END,):
+                with self._scm_lock:
+                    n = len(self.scm_diffs)
+                self.scm_result_index = max(0, n - 1)
+                return True
+            return False
+        if self.scm_page == SCM_SYNC_CFG:
+            return self._key_scm_sync_cfg(ch)
+        if self.scm_page == SCM_SYNC:
+            if ch in (curses.KEY_UP, _WHEEL_UP):
+                self.scm_log_scroll += 1
+                return True
+            if ch in (curses.KEY_DOWN,):
+                self.scm_log_scroll = max(0, self.scm_log_scroll - 1)
+                return True
+            if ch in (curses.KEY_PPAGE,):
+                self.scm_log_scroll += 10
+                return True
+            if ch in (curses.KEY_NPAGE,):
+                self.scm_log_scroll = max(0, self.scm_log_scroll - 10)
+                return True
+            if ch in (curses.KEY_END,):
+                self.scm_log_scroll = 0
+                return True
+            running = self.scm_session is not None and self.scm_session.running
+            if not running and ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
+                self._action("scm_back")
+                return True
+            return True
+        return False
+
+    def _key_scm_sync_cfg(self, ch: int) -> bool:
+        if ch in (9, curses.KEY_DOWN):
+            self.scm_focus = (self.scm_focus + 1) % len(_SCM_SYNC_FOCUS)
+            return True
+        if ch in (getattr(curses, "KEY_BTAB", 353), curses.KEY_UP):
+            self.scm_focus = (self.scm_focus - 1) % len(_SCM_SYNC_FOCUS)
+            return True
+        name = _SCM_SYNC_FOCUS[self.scm_focus]
+        if name == "sync_jobs":
+            if ch in (curses.KEY_LEFT, ord("-")):
+                self.sync_jobs = max(1, self.sync_jobs - 1)
+            elif ch in (curses.KEY_RIGHT, ord("+"), ord("=")):
+                self.sync_jobs = min(256, self.sync_jobs + 1)
+            elif ch in (curses.KEY_BACKSPACE, 127, 8):
+                self.sync_jobs = max(1, self.sync_jobs // 10)
+            elif ord("0") <= ch <= ord("9"):
+                self.sync_jobs = min(256, self.sync_jobs * 10 + (ch - ord("0")))
+            else:
+                return False
+            return True
+        if name == "sync_force":
+            nxt = _cycle((True, False), self.sync_force, ch)
+            if nxt != self.sync_force:
+                if nxt:
+                    self._open_force_dialog()
+                else:
+                    self.sync_force = False
+            return True
+        if name == "sync_ignore":
+            self.sync_ignore = _cycle((True, False), self.sync_ignore, ch)
+            return True
+        if name == "sync_start" and ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
+            self._start_sync()
+            return True
         return False
 
     def _cycle_tab(self, step: int) -> None:
@@ -1814,8 +2637,11 @@ class BuildTui:
             self._set_focus("jobs")
             delta = int(payload or 0)
             self.jobs = min(256, max(1, self.jobs + delta))
-        elif action == "focus" and payload == "jobs":
-            self._set_focus("jobs")
+        elif action == "focus" and payload == "check_jobs":
+            if self.dialog is not None and self.dialog.kind == "settings":
+                self.dialog.focus = 1
+        elif action == "focus" and isinstance(payload, str):
+            self._set_focus(payload)
         elif action == "gapps":
             self._set_focus("gapps")
             if isinstance(payload, bool):
@@ -1860,6 +2686,71 @@ class BuildTui:
             self.lang = payload
         elif action == "log":
             pass
+        elif action == "scm_pick" and isinstance(payload, int):
+            with self._scm_lock:
+                n = len(self.scm_diffs)
+            if 0 <= payload < n:
+                self.scm_result_index = payload
+        elif action == "scm_home" and isinstance(payload, str):
+            if payload == "check":
+                self.scm_home_focus = 0
+                self._open_scope_dialog(True)
+            elif payload == "check_offline":
+                self.scm_home_focus = 1
+                self._open_scope_dialog(False)
+            elif payload == "sync":
+                self.scm_home_focus = 2
+                self.scm_focus = 0
+                self.scm_status_key = ""
+                self.scm_page = SCM_SYNC_CFG
+            elif payload == "settings":
+                self.scm_home_focus = 3
+                self._open_settings_dialog()
+        elif action == "sync_jobs":
+            self._set_focus("sync_jobs")
+            delta = int(payload or 0)
+            self.sync_jobs = min(256, max(1, self.sync_jobs + delta))
+        elif action == "sync_force":
+            self._set_focus("sync_force")
+            if isinstance(payload, bool):
+                if payload and not self.sync_force:
+                    self._open_force_dialog()
+                elif not payload:
+                    self.sync_force = False
+        elif action == "sync_ignore":
+            self._set_focus("sync_ignore")
+            if isinstance(payload, bool):
+                self.sync_ignore = payload
+        elif action == "sync_start":
+            self._set_focus("sync_start")
+            self._start_sync()
+        elif action == "scm_back":
+            self.scm_page = SCM_HOME
+        elif action == "settings_transport" and isinstance(payload, str) and payload in _GIT_TRANSPORTS:
+            if self.dialog is not None and self.dialog.kind == "settings":
+                self.dialog.git_transport = payload
+                self.dialog.focus = 0
+        elif action == "settings_jobs":
+            if self.dialog is not None and self.dialog.kind == "settings":
+                self.dialog.focus = 1
+                delta = int(payload or 0)
+                self.dialog.check_jobs = min(256, max(1, self.dialog.check_jobs + delta))
+        elif action == "dialog" and isinstance(payload, str):
+            kind = self.dialog.kind if self.dialog is not None else ""
+            draft = self.dialog.git_transport if self.dialog is not None else GIT_HTTPS
+            draft_jobs = self.dialog.check_jobs if self.dialog is not None else CHECK_JOBS_DEFAULT
+            self.dialog = None
+            if payload == "cancel":
+                if kind == "force":
+                    self.sync_force = False
+            elif payload == "apply" and kind == "settings":
+                if draft in _GIT_TRANSPORTS:
+                    self.git_transport = draft
+                self.check_jobs = min(256, max(1, int(draft_jobs)))
+            elif payload in (SCOPE_FORKS, SCOPE_AOSP, SCOPE_ALL):
+                self._start_check(payload)
+            elif payload == "force_ok":
+                self.sync_force = True
         self._persist_if_changed(before)
 
     def _prefs_snapshot(self) -> tuple:
@@ -1873,6 +2764,8 @@ class BuildTui:
             self.keep_going,
             self.lang,
             self.voice,
+            self.git_transport,
+            self.check_jobs,
         )
 
     def _persist_if_changed(self, before: tuple) -> None:
@@ -1891,6 +2784,8 @@ class BuildTui:
                 keep_going=self.keep_going,
                 lang=self.lang,
                 voice=self.voice,
+                git_transport=self.git_transport,
+                check_jobs=self.check_jobs,
             ),
         )
 

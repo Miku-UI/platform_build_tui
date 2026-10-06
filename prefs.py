@@ -25,6 +25,7 @@ TUI_DIR_NAME = ".miku-tui"
 PREFS_NAME = "prefs.json"
 _VARIANTS = frozenset({"user", "userdebug", "eng"})
 _VOICES = frozenset({"moe", "pro"})
+_GIT_TRANSPORTS = frozenset({"https", "ssh"})
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,8 @@ class Prefs:
     keep_going: bool | None = None
     lang: str | None = None
     voice: str | None = None
+    git_transport: str | None = None
+    check_jobs: int | None = None
 
 
 def tui_dir(top: Path, *, create: bool = False) -> Path:
@@ -66,6 +69,8 @@ def load_prefs(top: Path) -> Prefs:
     keep_going = raw.get("keep_going")
     lang = raw.get("lang")
     voice = raw.get("voice")
+    git_transport = raw.get("git_transport")
+    check_jobs = raw.get("check_jobs")
     return Prefs(
         device=device.strip() if isinstance(device, str) and device.strip() else None,
         variant=variant if variant in _VARIANTS else None,
@@ -75,6 +80,8 @@ def load_prefs(top: Path) -> Prefs:
         keep_going=keep_going if isinstance(keep_going, bool) else None,
         lang=lang if lang in LANGS else None,
         voice=voice if voice in _VOICES else None,
+        git_transport=git_transport if git_transport in _GIT_TRANSPORTS else None,
+        check_jobs=check_jobs if isinstance(check_jobs, int) and not isinstance(check_jobs, bool) and 1 <= check_jobs <= 256 else None,
     )
 
 
@@ -96,6 +103,10 @@ def save_prefs(top: Path, prefs: Prefs) -> None:
         data["lang"] = prefs.lang
     if prefs.voice in _VOICES:
         data["voice"] = prefs.voice
+    if prefs.git_transport in _GIT_TRANSPORTS:
+        data["git_transport"] = prefs.git_transport
+    if prefs.check_jobs is not None:
+        data["check_jobs"] = max(1, min(256, int(prefs.check_jobs)))
     tui_dir(top, create=True)
     path = prefs_path(top)
     tmp = path.with_name(path.name + ".tmp")
