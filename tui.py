@@ -29,7 +29,7 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
-from art import SPARKS, banner_lines, logo_lines
+from art import SPARKS, about_art, banner_lines, logo_lines
 from builder import BuildConfig, BuildSession
 from devices import Product, resolve_device
 from i18n import LANG_CHIPS, detect_lang, t
@@ -61,6 +61,19 @@ MODE_PICKER = "picker"
 MODE_BUILD = "build"
 MODE_DONE = "done"
 MODE_RESULT = "result"
+
+TUI_VERSION = "1.0.0"
+
+# Visible page; independent of mode so a running build is not interrupted.
+TAB_BUILD = "build"
+TAB_ABOUT = "about"
+TABS = (TAB_BUILD, TAB_ABOUT)
+_TAB_PAGES = {
+    TAB_ABOUT: "_draw_about",
+}
+_TAB_CLOSE = {
+    TAB_ABOUT: "_close_about",
+}
 
 _STAGE_PAIR = {
     "prepare": 37,
@@ -569,6 +582,7 @@ class BuildTui:
         if self.selected is None and len(products) == 1:
             self.selected = products[0]
         self.mode = MODE_CONFIG
+        self.tab = TAB_BUILD
         self.focus = 0
         self.picker_index = 0
         if self.selected is not None:
@@ -749,6 +763,7 @@ class BuildTui:
         stdscr.erase()
         self.hits = []
         self._scroll_geom = Rect(0, 0, 0, 0)
+        self._log_geom = Rect(0, 0, 0, 0)
         rows, cols = stdscr.getmaxyx()
         if rows < 16 or cols < 60:
             _add(stdscr, 0, 0, self._t("term_too_small"), curses.color_pair(2) | curses.A_BOLD, cols)
@@ -757,7 +772,10 @@ class BuildTui:
         left, _gap, cy, cx, ch, cw = _panel_geom(rows, cols)
         self.host.tick()
         self._draw_banner(stdscr, rows, left)
-        if self.mode == MODE_PICKER:
+        page = _TAB_PAGES.get(self.tab)
+        if page is not None:
+            getattr(self, page)(stdscr, cy, cx, ch, cw)
+        elif self.mode == MODE_PICKER:
             self._draw_picker(stdscr, cy, cx, ch, cw)
         elif self.mode == MODE_RESULT:
             self._draw_result(stdscr, cy, cx, ch, cw)
@@ -765,6 +783,7 @@ class BuildTui:
             self._draw_build(stdscr, cy, cx, ch, cw)
         else:
             self._draw_config(stdscr, cy, cx, ch, cw)
+        self._draw_tab_bar(stdscr, cy, cx, cw)
         self._draw_card_chrome(stdscr, cy, cx, cw)
         stdscr.refresh()
 
@@ -1044,10 +1063,81 @@ class BuildTui:
             _add(stdscr, y + i, x, text, attr, w)
         self.hits.append(Hit(Rect(y, x, h, w), action))
 
+    def _show_close(self) -> bool:
+        return not (self.tab == TAB_BUILD and self.mode == MODE_BUILD)
+
     def _chrome_reserve(self) -> int:
-        if self.mode == MODE_BUILD:
-            return _MIN_W
-        return _MIN_W + _CLOSE_W
+        if self._show_close():
+            return _MIN_W + _CLOSE_W
+        return _MIN_W
+
+    def _draw_tab_bar(self, stdscr: curses.window, y: int, x: int, w: int) -> None:
+        xx = x + 2
+        inner = max(10, w - 4)
+        cx = xx
+        for tab in TABS:
+            label = f" {self._t(f'tab_{tab}')} "
+            tw = dw(label)
+            if cx + tw - xx > inner:
+                break
+            attr = curses.color_pair(3) | curses.A_BOLD if tab == self.tab else curses.color_pair(10)
+            _add(stdscr, y + 1, cx, label, attr, tw)
+            self.hits.append(Hit(Rect(y + 1, cx, 1, tw), "tab", tab))
+            cx += tw + 1
+
+    def _draw_about(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        _rounded_frame(stdscr, y, x, h, w, curses.color_pair(12), "✦  Miku UI", self._chrome_reserve())
+        inner = max(10, w - 4)
+        xx = x + 2
+        top = y + 2
+        bottom = y + h - 3
+        area_h = max(0, bottom - top + 1)
+        title = "Miku UI Build System TUI"
+        ver = f"ver {TUI_VERSION}"
+        art = about_art()
+        keep = max(0, area_h - 2)
+        if len(art) > keep:
+            extra = len(art) - keep
+            start = extra // 2
+            art = art[start : start + keep]
+        block = [*art, title, ver]
+        if len(block) > area_h:
+            block = block[:area_h]
+        block_w = min(inner, max((dw(line) for line in block), default=0))
+        bx = xx + max(0, (inner - block_w) // 2)
+        y0 = top + max(0, (area_h - len(block)) // 2)
+        art_n = min(len(art), len(block))
+        for i, line in enumerate(block):
+            yy = y0 + i
+            if yy > bottom:
+                break
+            if i < art_n:
+                lx = bx
+                attr = curses.color_pair(11)
+            else:
+                lx = bx + max(0, (block_w - min(dw(line), block_w)) // 2)
+                attr = curses.color_pair(11) | curses.A_BOLD if line == title else curses.color_pair(10)
+            _add(stdscr, yy, lx, line, attr, max(1, xx + inner - lx))
+        self._draw_lang_bar(stdscr, y + h - 2, xx, inner)
+
+    def _close_about(self) -> bool:
+        return False
+
+    def _close_page(self) -> None:
+        if self.tab != TAB_BUILD:
+            closer = _TAB_CLOSE.get(self.tab)
+            if closer is not None and getattr(self, closer)():
+                return
+            self.tab = TAB_BUILD
+            return
+        if self.mode == MODE_CONFIG:
+            self._leave = True
+        elif self.mode == MODE_PICKER:
+            self.mode = MODE_CONFIG
+        elif self.mode == MODE_RESULT:
+            self.mode = MODE_DONE
+        elif self.mode == MODE_DONE:
+            self.mode = MODE_CONFIG
 
     def _draw_card_chrome(self, stdscr: curses.window, y: int, x: int, w: int) -> None:
         reserve = self._chrome_reserve()
@@ -1057,7 +1147,7 @@ class BuildTui:
         attr = curses.color_pair(10) | curses.A_BOLD
         _add(stdscr, y, cx, _MIN_MARK, attr, _MIN_W)
         self.hits.append(Hit(Rect(y, cx, 1, _MIN_W), "minimize"))
-        if self.mode != MODE_BUILD:
+        if self._show_close():
             cx += _MIN_W
             _add(stdscr, y, cx, _CLOSE_MARK, attr, _CLOSE_W)
             self.hits.append(Hit(Rect(y, cx, 1, _CLOSE_W), "quit"))
@@ -1466,7 +1556,11 @@ class BuildTui:
             self._begin_scroll_drag(my)
             self._cancel_press()
             return
-        in_log = self.mode in (MODE_BUILD, MODE_DONE) and self._log_geom.contains(my, mx)
+        in_log = (
+            self.tab == TAB_BUILD
+            and self.mode in (MODE_BUILD, MODE_DONE)
+            and self._log_geom.contains(my, mx)
+        )
         if self._selecting and (pressed or report):
             pos = self._log_pos(my, mx, clamp=True)
             if pos is not None:
@@ -1520,6 +1614,8 @@ class BuildTui:
                 self._fire_click(hit.action, hit.payload)
 
     def _wheel(self, delta: int) -> None:
+        if self.tab != TAB_BUILD:
+            return
         if self.mode == MODE_PICKER:
             self.picker_index = min(max(0, self.picker_index + delta), max(0, len(self.products) - 1))
             return
@@ -1588,6 +1684,8 @@ class BuildTui:
                 self._action("stop_or_back")
                 return False
             return True
+        if self.tab != TAB_BUILD:
+            return self._key_other_tab(ch)
         if self.mode == MODE_PICKER:
             return self._key_picker(ch)
         if self.mode == MODE_RESULT:
@@ -1596,9 +1694,22 @@ class BuildTui:
             return self._key_build(ch)
         return self._key_config(ch)
 
+    def _key_other_tab(self, ch: int) -> bool:
+        if ch in (ord("q"), ord("Q"), 27):
+            self._action("quit")
+            return self._leave
+        if ch in (curses.KEY_LEFT, curses.KEY_RIGHT):
+            self._cycle_tab(-1 if ch == curses.KEY_LEFT else 1)
+        return False
+
+    def _cycle_tab(self, step: int) -> None:
+        idx = TABS.index(self.tab) if self.tab in TABS else 0
+        self.tab = TABS[(idx + step) % len(TABS)]
+
     def _key_config(self, ch: int) -> bool:
         if ch in (ord("q"), ord("Q")):
-            return True
+            self._action("quit")
+            return self._leave
         if ch in (9, curses.KEY_DOWN):
             self.focus = (self.focus + 1) % len(_FOCUS)
             return False
@@ -1734,14 +1845,9 @@ class BuildTui:
         elif action == "minimize":
             self._detach = True
         elif action == "quit":
-            if self.mode == MODE_CONFIG:
-                self._leave = True
-            elif self.mode == MODE_PICKER:
-                self.mode = MODE_CONFIG
-            elif self.mode == MODE_RESULT:
-                self.mode = MODE_DONE
-            elif self.mode == MODE_DONE:
-                self.mode = MODE_CONFIG
+            self._close_page()
+        elif action == "tab" and isinstance(payload, str) and payload in TABS:
+            self.tab = payload
         elif action == "voice" and isinstance(payload, str) and payload in {c for c, _n in VOICE_CHIPS}:
             self.voice = payload
         elif action == "lang" and isinstance(payload, str) and payload in {c for c, _n in LANG_CHIPS}:
