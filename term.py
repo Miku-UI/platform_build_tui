@@ -21,6 +21,7 @@ import os
 import struct
 import termios
 import unicodedata
+from dataclasses import dataclass
 
 from logbuf import Cell, _cells_to_glyphs
 from report import Glyph
@@ -29,6 +30,44 @@ _WHEEL_UP = getattr(curses, "BUTTON4_PRESSED", 0x10000)
 _WHEEL_DOWN = getattr(curses, "BUTTON5_PRESSED", 0x200000)
 _CLOSE_W = 3
 _MIN_W = 3
+_CYCLE_PREV = (curses.KEY_LEFT,)
+_CYCLE_NEXT = (curses.KEY_RIGHT, ord(" "), curses.KEY_ENTER, 10, 13)
+
+
+@dataclass
+class Rect:
+    y: int
+    x: int
+    h: int
+    w: int
+
+    def contains(self, y: int, x: int) -> bool:
+        return self.y <= y < self.y + self.h and self.x <= x < self.x + self.w
+
+
+@dataclass
+class Hit:
+    rect: Rect
+    action: str
+    payload: object = None
+
+
+def _cycle(values: tuple, current, ch: int):
+    if ch not in _CYCLE_PREV and ch not in _CYCLE_NEXT:
+        return current
+    n = len(values)
+    if n == 0:
+        return current
+    idx = values.index(current) if current in values else 0
+    step = -1 if ch in _CYCLE_PREV else 1
+    return values[(idx + step) % n]
+
+
+def _fmt_elapsed(seconds: float) -> str:
+    total = max(0, int(seconds))
+    hh, rem = divmod(total, 3600)
+    mm, ss = divmod(rem, 60)
+    return f"{hh:02d}:{mm:02d}:{ss:02d}"
 
 
 def _cell_attr(cell: Cell) -> int:
