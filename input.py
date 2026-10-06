@@ -117,10 +117,10 @@ def draw_log(
     h: int,
     w: int,
     *,
-    log: LogBuffer | None = None,
+    log: LogBuffer,
     scroll_attr: str = "log_scroll",
 ) -> None:
-    buf = log if log is not None else app.build.log
+    buf = log
     key = (id(buf), buf.generation, w)
     if app._wrap_key != key:
         committed, current, table, inplace = buf.snapshot()
@@ -324,14 +324,10 @@ def handle_mouse(app) -> None:
 
 
 def handle_wheel(app, delta: int) -> None:
-    if app.tab == "scm":
-        if app.scm.dialog is not None:
-            return
-        app.scm.wheel(app, delta)
+    page = app.current_page()
+    if page.overlay():
         return
-    if app.tab != "build":
-        return
-    app.build.wheel(app, delta)
+    page.wheel(app.make_ctx(), delta)
 
 
 def log_pos(app, y: int, x: int, clamp: bool) -> tuple[int, int] | None:

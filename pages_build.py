@@ -42,6 +42,7 @@ from term import (
     clip,
     dw,
 )
+from ctx import Page
 from widgets import box_btn, fill_btn, jobs_row, option_block, yes_no
 
 MODE_CONFIG = "config"
@@ -58,7 +59,7 @@ VARIANTS = ("user", "userdebug", "eng")
 _FOCUS = ("device", "variant", "jobs", "gapps", "ccache", "keep_going", "clean", "build")
 
 
-class BuildPage:
+class BuildPage(Page):
     def __init__(
         self,
         top: Path,
@@ -143,11 +144,17 @@ class BuildPage:
     def showing_log(self) -> bool:
         return self.mode in (MODE_BUILD, MODE_DONE)
 
+    def consume_interrupt(self) -> bool:
+        if self.mode == MODE_BUILD:
+            self._stop_build()
+            return True
+        return False
+
     def set_status(self, key: str = "", **kwargs: object) -> None:
         self.status_key = key
         self.status_args = kwargs
 
-    def reap(self, app) -> None:
+    def reap(self, ctx) -> None:
         session = self.session
         if self.mode == MODE_BUILD and session is not None and not session.running:
             code = session.returncode
@@ -157,11 +164,11 @@ class BuildPage:
                 self.mode = MODE_DONE
             elif code == 0:
                 self.set_status("build_ok")
-                self._open_result(app, session, True)
+                self._open_result(ctx, session, True)
             else:
                 self.set_status("build_fail", code=code)
-                self._open_result(app, session, False)
-            app.host.tick(force_disk=True)
+                self._open_result(ctx, session, False)
+            ctx.tick_host(force_disk=True)
         if self._stopping is not None and not self._stopping.running:
             self._stopping = None
 
@@ -177,30 +184,30 @@ class BuildPage:
             return True
         return False
 
-    def draw(self, app, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+    def draw(self, ctx, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         if self.mode == MODE_PICKER:
-            self._draw_picker(app, stdscr, y, x, h, w)
+            self._draw_picker(ctx, stdscr, y, x, h, w)
         elif self.mode == MODE_RESULT:
-            self._draw_result(app, stdscr, y, x, h, w)
+            self._draw_result(ctx, stdscr, y, x, h, w)
         elif self.mode in (MODE_BUILD, MODE_DONE):
-            self._draw_build(app, stdscr, y, x, h, w)
+            self._draw_build(ctx, stdscr, y, x, h, w)
         else:
-            self._draw_config(app, stdscr, y, x, h, w)
+            self._draw_config(ctx, stdscr, y, x, h, w)
 
-    def _draw_config(self, app, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+    def _draw_config(self, ctx, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         _rounded_frame(stdscr, y, x, h, w, curses.color_pair(12), "✦  Cinderella")
         inner = max(10, w - 4)
         xx = x + 2
         row = y + 2
         limit = y + h - 6
-        hits = app.hits
+        hits = ctx.hits
         _add(stdscr, row, xx, self.combo_preview(), curses.color_pair(2) | curses.A_DIM, inner)
         row += 2
         if row < limit:
-            _add(stdscr, row, xx, app._t("device"), curses.color_pair(15) | curses.A_DIM, inner)
+            _add(stdscr, row, xx, ctx.t("device"), curses.color_pair(15) | curses.A_DIM, inner)
             row += 1
         if row < limit:
-            device_label = self.selected.label if self.selected else app._t("pick_device")
+            device_label = self.selected.label if self.selected else ctx.t("pick_device")
             box_btn(
                 stdscr,
                 hits,
@@ -220,13 +227,13 @@ class BuildPage:
             xx,
             inner,
             limit,
-            app._t("variant"),
+            ctx.t("variant"),
             tuple((name, name) for name in VARIANTS),
             self.variant,
             "variant",
         )
         if row < limit:
-            _add(stdscr, row, xx, app._t("jobs"), curses.color_pair(15) | curses.A_DIM, inner)
+            _add(stdscr, row, xx, ctx.t("jobs"), curses.color_pair(15) | curses.A_DIM, inner)
             row += 1
         if row < limit:
             jobs_row(
@@ -241,9 +248,9 @@ class BuildPage:
                 focused=self.has_focus("jobs"),
             )
             row += 2
-        yn = yes_no(app._t)
-        row = option_block(stdscr, hits, row, xx, inner, limit, app._t("gapps"), yn, self.gapps, "gapps")
-        row = option_block(stdscr, hits, row, xx, inner, limit, app._t("ccache"), yn, self.ccache, "ccache")
+        yn = yes_no(ctx.t)
+        row = option_block(stdscr, hits, row, xx, inner, limit, ctx.t("gapps"), yn, self.gapps, "gapps")
+        row = option_block(stdscr, hits, row, xx, inner, limit, ctx.t("ccache"), yn, self.ccache, "ccache")
         row = option_block(
             stdscr,
             hits,
@@ -251,7 +258,7 @@ class BuildPage:
             xx,
             inner,
             limit,
-            app._t("keep_going"),
+            ctx.t("keep_going"),
             yn,
             self.keep_going,
             "keep_going",
@@ -263,11 +270,11 @@ class BuildPage:
             xx,
             inner,
             limit,
-            app._t("clean"),
+            ctx.t("clean"),
             (
-                (CLEAN_NONE, app._t("clean_none")),
-                (CLEAN_INSTALL, app._t("clean_install")),
-                (CLEAN_FULL, app._t("clean_full")),
+                (CLEAN_NONE, ctx.t("clean_none")),
+                (CLEAN_INSTALL, ctx.t("clean_install")),
+                (CLEAN_FULL, ctx.t("clean_full")),
             ),
             self.clean,
             "clean",
@@ -278,12 +285,12 @@ class BuildPage:
                 stdscr,
                 y + h - 6,
                 xx,
-                app._t(self.status_key, **self.status_args),
+                ctx.t(self.status_key, **self.status_args),
                 curses.color_pair(6),
                 inner,
             )
         ready = self.selected is not None
-        build_label = app._t("build_now")
+        build_label = ctx.t("build_now")
         btn_h = 3
         btn_w = min(inner, max(22, dw(build_label) + 10))
         btn_x = x + max(0, (w - btn_w) // 2)
@@ -294,7 +301,7 @@ class BuildPage:
         elif self.has_focus("build"):
             attr = curses.color_pair(3) | curses.A_BOLD
         fill_btn(stdscr, hits, btn_y, btn_x, btn_h, btn_w, build_label, attr, "build")
-        app._draw_lang_bar(stdscr, y + h - 2, xx, inner, voices=True)
+        ctx.draw_lang_bar(stdscr, y + h - 2, xx, inner, voices=True)
 
     def _picker_rows(self) -> list[tuple[str, int | str]]:
         rows: list[tuple[str, int | str]] = [("head", "picker_local")]
@@ -307,8 +314,8 @@ class BuildPage:
                 rows.append(("item", i))
         return rows
 
-    def _draw_picker(self, app, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
-        _rounded_frame(stdscr, y, x, h, w, curses.color_pair(12), f"✦  {app._t('picker_title')}")
+    def _draw_picker(self, ctx, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        _rounded_frame(stdscr, y, x, h, w, curses.color_pair(12), f"✦  {ctx.t('picker_title')}")
         inner = max(10, w - 4)
         xx = x + 2
         list_y = y + 3
@@ -336,7 +343,7 @@ class BuildPage:
                     stdscr,
                     list_y + i,
                     xx,
-                    app._t(str(payload)),
+                    ctx.t(str(payload)),
                     curses.color_pair(15) | curses.A_DIM,
                     inner,
                 )
@@ -347,10 +354,10 @@ class BuildPage:
             attr = curses.color_pair(3) | curses.A_BOLD if selected else curses.color_pair(2)
             prefix = "▸ " if selected else "  "
             _add(stdscr, list_y + i, xx, clip(prefix + product.label, inner), attr, inner)
-            app.hits.append(Hit(Rect(list_y + i, xx, 1, inner), "pick", product_idx))
-        app._draw_lang_bar(stdscr, y + h - 2, xx, inner)
+            ctx.hits.append(Hit(Rect(list_y + i, xx, 1, inner), "pick", product_idx))
+        ctx.draw_lang_bar(stdscr, y + h - 2, xx, inner)
 
-    def _draw_build(self, app, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+    def _draw_build(self, ctx, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         session = self.session
         combo = session.config.lunch_combo if session else self.combo_preview()
         elapsed = ""
@@ -358,13 +365,13 @@ class BuildPage:
             end = session.finished_at or time.time()
             elapsed = "  " + _fmt_elapsed(end - session.started_at)
         if self.mode == MODE_BUILD:
-            title = self._phase_title(app)
+            title = self._phase_title(ctx)
         else:
-            title = app._t(self.status_key, **self.status_args) if self.status_key else app._t("done")
+            title = ctx.t(self.status_key, **self.status_args) if self.status_key else ctx.t("done")
         room = max(0, w - 4 - dw(elapsed))
         title = clip(title, room)
         _rounded_frame(
-            stdscr, y, x, h, w, curses.color_pair(12), f"✦  {title}{elapsed}", app._chrome_reserve()
+            stdscr, y, x, h, w, curses.color_pair(12), f"✦  {title}{elapsed}", ctx.chrome_reserve()
         )
         inner = max(10, w - 4)
         xx = x + 2
@@ -372,60 +379,59 @@ class BuildPage:
         log_top = y + 4
         log_h = max(3, h - 10)
         log_w = inner
-        app._log_geom = Rect(log_top, xx, log_h, log_w)
-        app._scroll_owner = self
-        app._scroll_attr = "log_scroll"
+        ctx.log_geom = Rect(log_top, xx, log_h, log_w)
+        ctx.set_scroll(self)
         self.log.set_size(max(2, log_h), max(20, log_w))
-        app._draw_log(stdscr, log_top, xx, log_h, log_w, log=self.log, scroll_attr="log_scroll")
-        app._draw_log_scrollbar(stdscr, log_top, x + w - 2, log_h)
+        ctx.draw_log(stdscr, log_top, xx, log_h, log_w, log=self.log, scroll_attr="log_scroll")
+        ctx.draw_log_scrollbar(stdscr, log_top, x + w - 2, log_h)
         if session is not None:
             session.set_winsize(max(2, log_h), max(20, log_w))
-        btn = app._t("stop") if self.mode == MODE_BUILD else app._t("back")
+        btn = ctx.t("stop") if self.mode == MODE_BUILD else ctx.t("back")
         btn_attr = curses.color_pair(8) | curses.A_BOLD
         if self.mode == MODE_DONE:
             btn_attr = curses.color_pair(9) | curses.A_BOLD
         btn_w = min(inner, max(16, dw(btn) + 10))
         btn_x = x + max(0, (w - btn_w) // 2)
         btn_y = y + h - 5
-        fill_btn(stdscr, app.hits, btn_y, btn_x, 3, btn_w, btn, btn_attr, "stop_or_back")
-        app._draw_lang_bar(stdscr, y + h - 2, xx, inner)
+        fill_btn(stdscr, ctx.hits, btn_y, btn_x, 3, btn_w, btn, btn_attr, "stop_or_back")
+        ctx.draw_lang_bar(stdscr, y + h - 2, xx, inner)
 
-    def _draw_result(self, app, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+    def _draw_result(self, ctx, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         report = self.report
         if report is None:
-            self._draw_build(app, stdscr, y, x, h, w)
+            self._draw_build(ctx, stdscr, y, x, h, w)
             return
         session = self.session
         elapsed = ""
         if session is not None:
             end = session.finished_at or time.time()
             elapsed = "  " + _fmt_elapsed(end - session.started_at)
-        frame = clip(app._t("result_frame"), max(0, w - 4 - dw(elapsed)))
+        frame = clip(ctx.t("result_frame"), max(0, w - 4 - dw(elapsed)))
         _rounded_frame(stdscr, y, x, h, w, curses.color_pair(12), f"✦  {frame}{elapsed}")
         inner = max(10, w - 4)
         xx = x + 2
         body_top = y + 2
         body_h = max(3, h - 8)
-        app._log_geom = Rect(body_top, xx, body_h, inner)
-        rows = result_rows(report, inner, app._t)
+        ctx.log_geom = Rect(body_top, xx, body_h, inner)
+        rows = result_rows(report, inner, ctx.t)
         self._result_n = len(rows)
         max_off = max(0, len(rows) - body_h)
         self.result_scroll = min(max(0, self.result_scroll), max_off)
         view = rows[self.result_scroll : self.result_scroll + body_h]
         for i, segs in enumerate(view):
             _add_segs(stdscr, body_top + i, xx, segs, inner)
-        btn = app._t("back")
+        btn = ctx.t("back")
         btn_w = min(inner, max(16, dw(btn) + 10))
         btn_x = x + max(0, (w - btn_w) // 2)
         btn_y = y + h - 5
         fill_btn(
-            stdscr, app.hits, btn_y, btn_x, 3, btn_w, btn, curses.color_pair(9) | curses.A_BOLD, "stop_or_back"
+            stdscr, ctx.hits, btn_y, btn_x, 3, btn_w, btn, curses.color_pair(9) | curses.A_BOLD, "stop_or_back"
         )
-        app._draw_lang_bar(stdscr, y + h - 2, xx, inner)
+        ctx.draw_lang_bar(stdscr, y + h - 2, xx, inner)
 
-    def _phase_title(self, app) -> str:
+    def _phase_title(self, ctx) -> str:
         key, args = self.phase.snapshot()
-        return app._t(key, **args)
+        return ctx.t(key, **args)
 
     def combo_preview(self) -> str:
         name = self.selected.product_name if self.selected else "?"
@@ -441,38 +447,38 @@ class BuildPage:
         extra = ("  " + " ".join(extras)) if extras else ""
         return f"{name}-{self.release}-{self.variant}  -j{self.jobs}{extra}"
 
-    def wheel(self, app, delta: int) -> None:
+    def wheel(self, ctx, delta: int) -> None:
         if self.mode == MODE_PICKER:
             self.picker_index = min(max(0, self.picker_index + delta), max(0, len(self.products) - 1))
             return
         if self.mode == MODE_RESULT:
-            max_off = max(0, self._result_n - max(1, app._log_geom.h))
+            max_off = max(0, self._result_n - max(1, ctx.log_geom.h))
             self.result_scroll = min(max(0, self.result_scroll + delta), max_off)
             return
         if self.mode in (MODE_BUILD, MODE_DONE):
-            max_off = max(0, len(app._wrapped) - max(1, app._log_geom.h))
+            max_off = max(0, len(ctx.wrapped) - max(1, ctx.log_geom.h))
             self.log_scroll = min(max(0, self.log_scroll - delta), max_off)
 
-    def key(self, app, ch: int) -> bool:
+    def key(self, ctx, ch: int) -> bool:
         if self.mode == MODE_PICKER:
-            return self._key_picker(app, ch)
+            return self._key_picker(ctx, ch)
         if self.mode == MODE_RESULT:
-            return self._key_result(app, ch)
+            return self._key_result(ctx, ch)
         if self.mode in (MODE_BUILD, MODE_DONE):
-            return self._key_build(app, ch)
-        return self._key_config(app, ch)
+            return self._key_build(ctx, ch)
+        return self._key_config(ctx, ch)
 
-    def _key_config(self, app, ch: int) -> bool:
+    def _key_config(self, ctx, ch: int) -> bool:
         if ch in (ord("q"), ord("Q")):
-            app._action("quit")
-            return app._leave
+            ctx.action("quit")
+            return ctx.leave
         if ch in (9, curses.KEY_DOWN):
             self.focus = (self.focus + 1) % len(_FOCUS)
             return False
         if ch in (getattr(curses, "KEY_BTAB", 353), curses.KEY_UP):
             self.focus = (self.focus - 1) % len(_FOCUS)
             return False
-        before = app._prefs_snapshot()
+        before = ctx.snapshot()
         name = _FOCUS[self.focus]
         if name == "device" and ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
             self._open_picker()
@@ -497,11 +503,11 @@ class BuildPage:
         elif name == "clean":
             self.clean = _cycle((CLEAN_NONE, CLEAN_INSTALL, CLEAN_FULL), self.clean, ch)
         elif name == "build" and ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
-            self._start_build(app)
-        app._persist_if_changed(before)
+            self._start_build(ctx)
+        ctx.persist_if_changed(before)
         return False
 
-    def _key_picker(self, app, ch: int) -> bool:
+    def _key_picker(self, ctx, ch: int) -> bool:
         if ch in (ord("q"), ord("Q")):
             self.mode = MODE_CONFIG
             return False
@@ -514,10 +520,10 @@ class BuildPage:
         elif ch in (curses.KEY_PPAGE,):
             self.picker_index = max(0, self.picker_index - 10)
         elif ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
-            app._action("pick", self.picker_index)
+            ctx.action("pick", self.picker_index)
         return False
 
-    def _key_build(self, app, ch: int) -> bool:
+    def _key_build(self, ctx, ch: int) -> bool:
         if ch in (curses.KEY_UP, _WHEEL_UP):
             self.log_scroll += 1
         elif ch in (curses.KEY_DOWN,):
@@ -529,12 +535,12 @@ class BuildPage:
         elif ch in (curses.KEY_END,):
             self.log_scroll = 0
         elif ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
-            app._action("stop_or_back")
+            ctx.action("stop_or_back")
         elif ch in (ord("q"), ord("Q")) and self.mode == MODE_DONE:
-            app._action("stop_or_back")
+            ctx.action("stop_or_back")
         return False
 
-    def _key_result(self, app, ch: int) -> bool:
+    def _key_result(self, ctx, ch: int) -> bool:
         if ch in (curses.KEY_UP, _WHEEL_UP):
             self.result_scroll = max(0, self.result_scroll - 1)
         elif ch in (curses.KEY_DOWN,):
@@ -548,10 +554,10 @@ class BuildPage:
         elif ch in (curses.KEY_END,):
             self.result_scroll = max(0, self._result_n)
         elif ch in (curses.KEY_ENTER, 10, 13, ord(" "), ord("q"), ord("Q")):
-            app._action("stop_or_back")
+            ctx.action("stop_or_back")
         return False
 
-    def handle_action(self, app, action: str, payload: object = None) -> bool:
+    def click(self, ctx, action: str, payload: object = None) -> bool:
         if action == "device":
             self.set_focus("device")
             self._open_picker()
@@ -591,7 +597,7 @@ class BuildPage:
             return True
         if action == "build":
             self.set_focus("build")
-            self._start_build(app)
+            self._start_build(ctx)
             return True
         if action == "pick" and isinstance(payload, int):
             if 0 <= payload < len(self.products):
@@ -621,7 +627,7 @@ class BuildPage:
                 self.picker_index = 0
         self.mode = MODE_PICKER
 
-    def _start_build(self, app) -> None:
+    def _start_build(self, ctx) -> None:
         if self.selected is None:
             self.set_status("need_device")
             self._open_picker()
@@ -636,12 +642,7 @@ class BuildPage:
         self.log_scroll = 0
         self.report = None
         self.result_scroll = 0
-        app._wrapped = []
-        app._wrap_key = None
-        app._sel_a = None
-        app._sel_b = None
-        app._selecting = False
-        app._scroll_drag = None
+        ctx.clear_pointer_state()
         self.set_status()
         config = BuildConfig(
             product=self.selected,
@@ -662,7 +663,7 @@ class BuildPage:
         self.session = session
         self.mode = MODE_BUILD
         session.start()
-        rows, cols = app._stdscr.getmaxyx() if app._stdscr is not None else (24, 80)
+        rows, cols = ctx.stdscr.getmaxyx() if ctx.stdscr is not None else (24, 80)
         _left, _gap, _cy, _cx, ch, cw = _panel_geom(rows, cols)
         session.set_winsize(max(8, ch - 8), max(20, cw - 4))
 
@@ -676,7 +677,7 @@ class BuildPage:
         self._stopping = session
         threading.Thread(target=session.stop, daemon=True).start()
 
-    def _open_result(self, app, session: BuildSession, ok: bool) -> None:
+    def _open_result(self, ctx, session: BuildSession, ok: bool) -> None:
         phase_key, entered, ninja_total, ninja_done, package_path = self.phase.snapshot_report()
         started = session.started_at
         finished = session.finished_at or time.time()
@@ -697,5 +698,5 @@ class BuildPage:
         )
         self.report = report
         self.result_scroll = 0
-        app._scroll_drag = None
+        ctx.clear_scroll_drag()
         self.mode = MODE_RESULT

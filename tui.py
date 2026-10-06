@@ -20,7 +20,8 @@ import socket
 import sys
 from pathlib import Path
 
-from art import SPARKS, about_art, banner_lines, logo_lines
+from art import SPARKS, banner_lines, logo_lines
+from ctx import Ctx, Page
 from devices import Product
 from i18n import LANG_CHIPS, detect_lang, t
 from input import (
@@ -31,11 +32,11 @@ from input import (
     handle_wheel,
 )
 from logbuf import Cell, LogBuffer
+from pages_about import AboutPage
 from pages_build import (
     CLEAN_FULL,
     CLEAN_INSTALL,
     CLEAN_NONE,
-    MODE_BUILD,
     BuildPage,
 )
 from pages_scm import ScmPage
@@ -61,7 +62,6 @@ from term import (
     _ensure_utf8,
     _init_colors,
     _panel_geom,
-    _rounded_frame,
     _sync_curses_size,
     clip,
     dw,
@@ -103,6 +103,13 @@ class BuildTui:
         self.release = release
         prefs = load_prefs(top)
         self.build = BuildPage(top, products, release, jobs, gapps, ccache, clean, variant, prefs)
+        self.scm = ScmPage(top, prefs.git_transport, prefs.check_jobs)
+        self.about = AboutPage(TUI_VERSION)
+        self._pages: dict[str, Page] = {
+            TAB_BUILD: self.build,
+            TAB_SCM: self.scm,
+            TAB_ABOUT: self.about,
+        }
         self.tab = TAB_BUILD
         self.hits: list[Hit] = []
         self.lang = prefs.lang or detect_lang()
@@ -128,17 +135,20 @@ class BuildTui:
         self._steal: tuple | None = None
         self._devnull = -1
         self.host = HostMonitor(top)
-        self.scm = ScmPage(top, prefs.git_transport, prefs.check_jobs)
         self._scroll_owner = self.build
         self._scroll_attr = "log_scroll"
+
+    def make_ctx(self) -> Ctx:
+        return Ctx(self)
+
+    def current_page(self) -> Page:
+        return self._pages.get(self.tab, self.build)
 
     def _t(self, key: str, **kwargs: object) -> str:
         return t(self.lang, key, voice=self.voice, **kwargs)
 
     def showing_log(self) -> bool:
-        if self.tab == TAB_SCM:
-            return self.scm.showing_log()
-        return self.tab == TAB_BUILD and self.build.showing_log()
+        return self.current_page().showing_log()
 
     def run(self) -> int:
         _ensure_utf8()
@@ -249,8 +259,9 @@ class BuildTui:
             self._detach = True
 
     def _reap(self) -> None:
-        self.build.reap(self)
-        self.scm.reap()
+        ctx = self.make_ctx()
+        for page in self._pages.values():
+            page.reap(ctx)
 
     def _draw(self, stdscr: curses.window) -> None:
         if _sync_curses_size(stdscr):
@@ -270,18 +281,15 @@ class BuildTui:
         left, _gap, cy, cx, ch, cw = _panel_geom(rows, cols)
         self.host.tick()
         self._draw_banner(stdscr, rows, left)
-        if self.tab == TAB_SCM:
-            self.scm.draw(self, stdscr, cy, cx, ch, cw)
-        elif self.tab == TAB_ABOUT:
-            self._draw_about(stdscr, cy, cx, ch, cw)
-        else:
-            self.build.draw(self, stdscr, cy, cx, ch, cw)
+        ctx = self.make_ctx()
+        page = self.current_page()
+        page.draw(ctx, stdscr, cy, cx, ch, cw)
         self._draw_tab_bar(stdscr, cy, cx, cw)
         self._draw_card_chrome(stdscr, cy, cx, cw)
-        if self.tab == TAB_SCM and self.scm.dialog is not None:
+        if page.overlay():
             keep = [hit for hit in self.hits if hit.action in ("tab", "minimize", "quit")]
             self.hits = keep
-            self.scm.draw_dialog(self, stdscr, cy, cx, ch, cw)
+            page.draw_overlay(ctx, stdscr, cy, cx, ch, cw)
         stdscr.refresh()
 
     def _draw_banner(self, stdscr: curses.window, rows: int, width: int) -> None:
@@ -369,11 +377,7 @@ class BuildTui:
         return rows
 
     def _show_close(self) -> bool:
-        if self.tab == TAB_BUILD and self.build.hide_close():
-            return False
-        if self.tab == TAB_SCM and self.scm.hide_close():
-            return False
-        return True
+        return not self.current_page().hide_close()
 
     def _chrome_reserve(self) -> int:
         if self._show_close():
@@ -394,52 +398,13 @@ class BuildTui:
             self.hits.append(Hit(Rect(y + 1, cx, 1, tw), "tab", tab))
             cx += tw + 1
 
-    def _draw_about(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
-        _rounded_frame(stdscr, y, x, h, w, curses.color_pair(12), "✦  Miku UI", self._chrome_reserve())
-        inner = max(10, w - 4)
-        xx = x + 2
-        top = y + 2
-        bottom = y + h - 3
-        area_h = max(0, bottom - top + 1)
-        title = "Miku UI Build System TUI"
-        ver = f"ver {TUI_VERSION}"
-        art = about_art()
-        keep = max(0, area_h - 2)
-        if len(art) > keep:
-            extra = len(art) - keep
-            start = extra // 2
-            art = art[start : start + keep]
-        block = [*art, title, ver]
-        if len(block) > area_h:
-            block = block[:area_h]
-        block_w = min(inner, max((dw(line) for line in block), default=0))
-        bx = xx + max(0, (inner - block_w) // 2)
-        y0 = top + max(0, (area_h - len(block)) // 2)
-        art_n = min(len(art), len(block))
-        for i, line in enumerate(block):
-            yy = y0 + i
-            if yy > bottom:
-                break
-            if i < art_n:
-                lx = bx
-                attr = curses.color_pair(11)
-            else:
-                lx = bx + max(0, (block_w - min(dw(line), block_w)) // 2)
-                attr = curses.color_pair(11) | curses.A_BOLD if line == title else curses.color_pair(10)
-            _add(stdscr, yy, lx, line, attr, max(1, xx + inner - lx))
-        self._draw_lang_bar(stdscr, y + h - 2, xx, inner)
-
     def _close_page(self) -> None:
-        if self.tab == TAB_SCM:
-            if self.scm.close():
-                return
-            self.tab = TAB_BUILD
+        if self.current_page().close():
             return
         if self.tab != TAB_BUILD:
             self.tab = TAB_BUILD
             return
-        if not self.build.close():
-            self._leave = True
+        self._leave = True
 
     def _draw_card_chrome(self, stdscr: curses.window, y: int, x: int, w: int) -> None:
         reserve = self._chrome_reserve()
@@ -503,7 +468,7 @@ class BuildTui:
         h: int,
         w: int,
         *,
-        log: LogBuffer | None = None,
+        log: LogBuffer,
         scroll_attr: str = "log_scroll",
     ) -> None:
         draw_log(self, stdscr, y, x, h, w, log=log, scroll_attr=scroll_attr)
@@ -520,21 +485,23 @@ class BuildTui:
     def _key(self, ch: int) -> bool:
         cancel_press(self)
         if ch in (3,):
-            if self.build.mode == MODE_BUILD:
-                self._action("stop_or_back")
-                return False
+            for page in self._pages.values():
+                if page.consume_interrupt():
+                    return False
             return True
-        if self.tab == TAB_SCM and self.scm.dialog is not None:
-            return self.scm.key_dialog(self, ch)
+        ctx = self.make_ctx()
+        page = self.current_page()
+        if page.overlay():
+            return page.key_overlay(ctx, ch)
         if self.tab != TAB_BUILD:
-            return self._key_other_tab(ch)
-        return self.build.key(self, ch)
+            return self._key_other_tab(ctx, ch)
+        return page.key(ctx, ch)
 
-    def _key_other_tab(self, ch: int) -> bool:
+    def _key_other_tab(self, ctx: Ctx, ch: int) -> bool:
         if ch in (ord("q"), ord("Q")):
             self._action("quit")
             return self._leave
-        if self.tab == TAB_SCM and self.scm.key(self, ch):
+        if self.current_page().key(ctx, ch):
             return False
         if ch in (curses.KEY_LEFT, curses.KEY_RIGHT):
             self._cycle_tab(-1 if ch == curses.KEY_LEFT else 1)
@@ -546,12 +513,6 @@ class BuildTui:
 
     def _action(self, action: str, payload: object = None) -> None:
         before = self._prefs_snapshot()
-        if self.scm.handle_action(self, action, payload):
-            self._persist_if_changed(before)
-            return
-        if self.build.handle_action(self, action, payload):
-            self._persist_if_changed(before)
-            return
         if action == "minimize":
             self._detach = True
         elif action == "quit":
@@ -564,6 +525,9 @@ class BuildTui:
             self.lang = payload
         elif action == "log":
             pass
+        elif self.current_page().click(self.make_ctx(), action, payload):
+            self._persist_if_changed(before)
+            return
         self._persist_if_changed(before)
 
     def _prefs_snapshot(self) -> tuple:

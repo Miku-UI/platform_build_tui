@@ -50,6 +50,7 @@ from term import (
     dw,
     wrap_words,
 )
+from ctx import Page
 from widgets import chip_row, fill_btn, jobs_row, option_block, yes_no
 
 SCM_HOME = "home"
@@ -90,7 +91,7 @@ class Dialog:
     check_jobs: int = CHECK_JOBS_DEFAULT
 
 
-class ScmPage:
+class ScmPage(Page):
     def __init__(self, top: Path, git_transport: str | None, check_jobs: int | None) -> None:
         self.top = top
         self.page = SCM_HOME
@@ -134,7 +135,16 @@ class ScmPage:
         except ValueError:
             return
 
-    def reap(self) -> None:
+    def overlay(self) -> bool:
+        return self.dialog is not None
+
+    def draw_overlay(self, ctx, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        self.draw_dialog(ctx, stdscr, y, x, h, w)
+
+    def key_overlay(self, ctx, ch: int) -> bool:
+        return self.key_dialog(ctx, ch)
+
+    def reap(self, ctx=None) -> None:
         scm = self.session
         if self.page == SCM_SYNC and scm is not None and not scm.running and not self._reaped:
             self._reaped = True
@@ -150,20 +160,20 @@ class ScmPage:
                 self.status_key = "scm_sync_fail"
                 self.status_args = {"code": code}
 
-    def draw(self, app, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+    def draw(self, ctx, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         if self.page == SCM_CHECK:
-            self._draw_check(app, stdscr, y, x, h, w)
+            self._draw_check(ctx, stdscr, y, x, h, w)
         elif self.page == SCM_RESULT:
-            self._draw_result(app, stdscr, y, x, h, w)
+            self._draw_result(ctx, stdscr, y, x, h, w)
         elif self.page == SCM_SYNC_CFG:
-            self._draw_sync_cfg(app, stdscr, y, x, h, w)
+            self._draw_sync_cfg(ctx, stdscr, y, x, h, w)
         elif self.page == SCM_SYNC:
-            self._draw_sync(app, stdscr, y, x, h, w)
+            self._draw_sync(ctx, stdscr, y, x, h, w)
         else:
-            self._draw_home(app, stdscr, y, x, h, w)
+            self._draw_home(ctx, stdscr, y, x, h, w)
 
-    def _draw_home(self, app, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
-        _rounded_frame(stdscr, y, x, h, w, curses.color_pair(12), f"✦  {app._t('scm_frame')}", app._chrome_reserve())
+    def _draw_home(self, ctx, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        _rounded_frame(stdscr, y, x, h, w, curses.color_pair(12), f"✦  {ctx.t('scm_frame')}", ctx.chrome_reserve())
         inner = max(10, w - 4)
         xx = x + 2
         row = y + 3
@@ -172,23 +182,23 @@ class ScmPage:
                 break
             selected = i == self.home_focus
             attr = curses.color_pair(3) | curses.A_BOLD if selected else curses.color_pair(12)
-            label = clip(("▸ " if selected else "  ") + app._t(key), inner)
+            label = clip(("▸ " if selected else "  ") + ctx.t(key), inner)
             _add(stdscr, row, xx, label, attr, inner)
-            app.hits.append(Hit(Rect(row, xx, 1, inner), "scm_home", name))
+            ctx.hits.append(Hit(Rect(row, xx, 1, inner), "scm_home", name))
             row += 2
         if self.status_key:
             _add(
                 stdscr,
                 y + h - 4,
                 xx,
-                app._t(self.status_key, **self.status_args),
+                ctx.t(self.status_key, **self.status_args),
                 curses.color_pair(6),
                 inner,
             )
-        app._draw_lang_bar(stdscr, y + h - 2, xx, inner)
+        ctx.draw_lang_bar(stdscr, y + h - 2, xx, inner)
 
-    def _draw_check(self, app, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
-        _rounded_frame(stdscr, y, x, h, w, curses.color_pair(12), f"✦  {app._t('scm_frame')}", app._chrome_reserve())
+    def _draw_check(self, ctx, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        _rounded_frame(stdscr, y, x, h, w, curses.color_pair(12), f"✦  {ctx.t('scm_frame')}", ctx.chrome_reserve())
         inner = max(10, w - 4)
         xx = x + 2
         with self._lock:
@@ -198,7 +208,7 @@ class ScmPage:
         top = y + 2
         bottom = y + h - 3
         area_h = max(0, bottom - top + 1)
-        label = app._t("scm_checking")
+        label = ctx.t("scm_checking")
         bar_w = min(inner, max(12, inner - 4))
         count = f"{done}/{total}" if total else "0/0"
         block = [label, "", "", count]
@@ -219,21 +229,21 @@ class ScmPage:
             lx = xx + max(0, (inner - dw(line)) // 2)
             attr = curses.color_pair(11) | curses.A_BOLD if i == 0 else curses.color_pair(10)
             _add(stdscr, yy, lx, line, attr, max(1, xx + inner - lx))
-        app._draw_lang_bar(stdscr, y + h - 2, xx, inner)
+        ctx.draw_lang_bar(stdscr, y + h - 2, xx, inner)
 
-    def _draw_result(self, app, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
-        _rounded_frame(stdscr, y, x, h, w, curses.color_pair(12), f"✦  {app._t('scm_frame')}", app._chrome_reserve())
+    def _draw_result(self, ctx, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        _rounded_frame(stdscr, y, x, h, w, curses.color_pair(12), f"✦  {ctx.t('scm_frame')}", ctx.chrome_reserve())
         inner = max(10, w - 4)
         xx = x + 2
-        _add(stdscr, y + 2, xx, app._t("scm_diff_title"), curses.color_pair(15) | curses.A_DIM, inner)
+        _add(stdscr, y + 2, xx, ctx.t("scm_diff_title"), curses.color_pair(15) | curses.A_DIM, inner)
         list_y = y + 4
         list_h = max(1, (y + h - 3) - list_y)
         with self._lock:
             rows = list(self.diffs)
-        app._log_geom = Rect(list_y, xx, list_h, inner)
+        ctx.log_geom = Rect(list_y, xx, list_h, inner)
         if not rows:
-            _add(stdscr, list_y, xx, app._t("scm_check_clean"), curses.color_pair(10), inner)
-            app._draw_lang_bar(stdscr, y + h - 2, xx, inner)
+            _add(stdscr, list_y, xx, ctx.t("scm_check_clean"), curses.color_pair(10), inner)
+            ctx.draw_lang_bar(stdscr, y + h - 2, xx, inner)
             return
         n = len(rows)
         if self.result_index >= n:
@@ -255,7 +265,7 @@ class ScmPage:
                 break
             item = rows[idx]
             selected = idx == self.result_index
-            status = app._t(_SCM_STATUS_KEY.get(item.status, "result_unknown"))
+            status = ctx.t(_SCM_STATUS_KEY.get(item.status, "result_unknown"))
             pair = _SCM_STATUS_PAIR.get(item.status, 10)
             status_w = dw(status)
             gap = 2
@@ -276,11 +286,11 @@ class ScmPage:
                     curses.color_pair(pair) | curses.A_BOLD,
                     status_w,
                 )
-            app.hits.append(Hit(Rect(list_y + i, xx, 1, inner), "scm_pick", idx))
-        app._draw_lang_bar(stdscr, y + h - 2, xx, inner)
+            ctx.hits.append(Hit(Rect(list_y + i, xx, 1, inner), "scm_pick", idx))
+        ctx.draw_lang_bar(stdscr, y + h - 2, xx, inner)
 
-    def _draw_sync_cfg(self, app, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
-        _rounded_frame(stdscr, y, x, h, w, curses.color_pair(12), f"✦  {app._t('scm_frame')}", app._chrome_reserve())
+    def _draw_sync_cfg(self, ctx, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        _rounded_frame(stdscr, y, x, h, w, curses.color_pair(12), f"✦  {ctx.t('scm_frame')}", ctx.chrome_reserve())
         inner = max(10, w - 4)
         xx = x + 2
         row = y + 2
@@ -288,12 +298,12 @@ class ScmPage:
         _add(stdscr, row, xx, self._sync_preview(), curses.color_pair(2) | curses.A_DIM, inner)
         row += 2
         if row < limit:
-            _add(stdscr, row, xx, app._t("scm_sync_jobs"), curses.color_pair(15) | curses.A_DIM, inner)
+            _add(stdscr, row, xx, ctx.t("scm_sync_jobs"), curses.color_pair(15) | curses.A_DIM, inner)
             row += 1
         if row < limit:
             jobs_row(
                 stdscr,
-                app.hits,
+                ctx.hits,
                 row,
                 xx,
                 inner,
@@ -305,26 +315,26 @@ class ScmPage:
             row += 2
         row = option_block(
             stdscr,
-            app.hits,
+            ctx.hits,
             row,
             xx,
             inner,
             limit,
-            app._t("scm_sync_force"),
-            yes_no(app._t),
+            ctx.t("scm_sync_force"),
+            yes_no(ctx.t),
             self.sync_force,
             "sync_force",
             title_attr=curses.color_pair(5) | curses.A_BOLD,
         )
         option_block(
             stdscr,
-            app.hits,
+            ctx.hits,
             row,
             xx,
             inner,
             limit,
-            app._t("scm_sync_ignore"),
-            yes_no(app._t),
+            ctx.t("scm_sync_ignore"),
+            yes_no(ctx.t),
             self.sync_ignore,
             "sync_ignore",
             gap=0,
@@ -334,21 +344,21 @@ class ScmPage:
                 stdscr,
                 y + h - 6,
                 xx,
-                app._t(self.status_key, **self.status_args),
+                ctx.t(self.status_key, **self.status_args),
                 curses.color_pair(6),
                 inner,
             )
-        start_label = app._t("scm_sync_start")
+        start_label = ctx.t("scm_sync_start")
         btn_w = min(inner, max(22, dw(start_label) + 10))
         btn_x = x + max(0, (w - btn_w) // 2)
         btn_y = y + h - 5
         attr = curses.color_pair(3) | curses.A_BOLD
         if self.has_focus("sync_start"):
             attr = curses.color_pair(3) | curses.A_BOLD
-        fill_btn(stdscr, app.hits, btn_y, btn_x, 3, btn_w, start_label, attr, "sync_start")
-        app._draw_lang_bar(stdscr, y + h - 2, xx, inner)
+        fill_btn(stdscr, ctx.hits, btn_y, btn_x, 3, btn_w, start_label, attr, "sync_start")
+        ctx.draw_lang_bar(stdscr, y + h - 2, xx, inner)
 
-    def _draw_sync(self, app, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+    def _draw_sync(self, ctx, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         session = self.session
         elapsed = ""
         if session is not None:
@@ -356,15 +366,15 @@ class ScmPage:
             elapsed = "  " + _fmt_elapsed(end - session.started_at)
         running = session is not None and session.running
         if running:
-            title = app._t("scm_syncing")
+            title = ctx.t("scm_syncing")
         elif self.status_key:
-            title = app._t(self.status_key, **self.status_args)
+            title = ctx.t(self.status_key, **self.status_args)
         else:
-            title = app._t("done")
+            title = ctx.t("done")
         room = max(0, w - 4 - dw(elapsed))
         title = clip(title, room)
         _rounded_frame(
-            stdscr, y, x, h, w, curses.color_pair(12), f"✦  {title}{elapsed}", app._chrome_reserve()
+            stdscr, y, x, h, w, curses.color_pair(12), f"✦  {title}{elapsed}", ctx.chrome_reserve()
         )
         inner = max(10, w - 4)
         xx = x + 2
@@ -372,15 +382,14 @@ class ScmPage:
         log_top = y + 4
         log_h = max(3, h - 10)
         log_w = inner
-        app._log_geom = Rect(log_top, xx, log_h, log_w)
-        app._scroll_owner = self
-        app._scroll_attr = "log_scroll"
+        ctx.log_geom = Rect(log_top, xx, log_h, log_w)
+        ctx.set_scroll(self)
         self.log.set_size(max(2, log_h), max(20, log_w))
-        app._draw_log(stdscr, log_top, xx, log_h, log_w, log=self.log, scroll_attr="log_scroll")
-        app._draw_log_scrollbar(stdscr, log_top, x + w - 2, log_h)
+        ctx.draw_log(stdscr, log_top, xx, log_h, log_w, log=self.log, scroll_attr="log_scroll")
+        ctx.draw_log_scrollbar(stdscr, log_top, x + w - 2, log_h)
         if session is not None:
             session.set_winsize(max(2, log_h), max(20, log_w))
-        btn = app._t("scm_sync_start") if running else app._t("back")
+        btn = ctx.t("scm_sync_start") if running else ctx.t("back")
         btn_w = min(inner, max(16, dw(btn) + 10))
         btn_x = x + max(0, (w - btn_w) // 2)
         btn_y = y + h - 5
@@ -392,22 +401,22 @@ class ScmPage:
                 text = (" " * left + btn + " " * right) if i == 1 else " " * btn_w
                 _add(stdscr, btn_y + i, btn_x, text, dim, btn_w)
         else:
-            fill_btn(stdscr, app.hits, btn_y, btn_x, 3, btn_w, btn, curses.color_pair(9) | curses.A_BOLD, "scm_back")
-        app._draw_lang_bar(stdscr, y + h - 2, xx, inner)
+            fill_btn(stdscr, ctx.hits, btn_y, btn_x, 3, btn_w, btn, curses.color_pair(9) | curses.A_BOLD, "scm_back")
+        ctx.draw_lang_bar(stdscr, y + h - 2, xx, inner)
 
-    def draw_dialog(self, app, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+    def draw_dialog(self, ctx, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         dlg = self.dialog
         if dlg is None:
             return
         if dlg.kind == "settings":
-            self._draw_settings_dialog(app, stdscr, y, x, h, w)
+            self._draw_settings_dialog(ctx, stdscr, y, x, h, w)
             return
-        title = app._t(dlg.title_key)
+        title = ctx.t(dlg.title_key)
         wrap_w = max(8, w - 8)
         body_lines: list[str] = []
         if dlg.body_key:
-            body_lines = wrap_words(app._t(dlg.body_key), wrap_w)
-        choice_rows = [wrap_words(app._t(key), max(4, wrap_w - 2)) for _payload, key in dlg.choices]
+            body_lines = wrap_words(ctx.t(dlg.body_key), wrap_w)
+        choice_rows = [wrap_words(ctx.t(key), max(4, wrap_w - 2)) for _payload, key in dlg.choices]
         text_w = max(
             [dw(title), *(dw(line) for line in body_lines), *(dw(line) + 2 for rows in choice_rows for line in rows)],
             default=10,
@@ -445,17 +454,17 @@ class ScmPage:
                 prefix = "▸ " if selected and j == 0 else "  "
                 _add(stdscr, cy, cx, clip(prefix + line, cw), attr, cw)
             last = cy
-            app.hits.append(Hit(Rect(first, cx, max(1, last - first + 1), cw), "dialog", payload))
+            ctx.hits.append(Hit(Rect(first, cx, max(1, last - first + 1), cw), "dialog", payload))
 
-    def _draw_settings_dialog(self, app, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+    def _draw_settings_dialog(self, ctx, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         dlg = self.dialog
         if dlg is None:
             return
-        title = app._t("scm_settings")
-        transport_title = app._t("scm_git_transport")
-        jobs_title = app._t("scm_check_jobs")
-        apply_l = f" {app._t('apply')} "
-        cancel_l = f" {app._t('cancel')} "
+        title = ctx.t("scm_settings")
+        transport_title = ctx.t("scm_git_transport")
+        jobs_title = ctx.t("scm_check_jobs")
+        apply_l = f" {ctx.t('apply')} "
+        cancel_l = f" {ctx.t('cancel')} "
         https_l = " HTTPS "
         ssh_l = " SSH "
         box_w = min(
@@ -487,7 +496,7 @@ class ScmPage:
         if row < limit:
             chip_row(
                 stdscr,
-                app.hits,
+                ctx.hits,
                 row,
                 cx,
                 cw,
@@ -502,7 +511,7 @@ class ScmPage:
         if row < limit:
             jobs_row(
                 stdscr,
-                app.hits,
+                ctx.hits,
                 row,
                 cx,
                 cw,
@@ -516,10 +525,10 @@ class ScmPage:
         apply_a = curses.color_pair(3) | curses.A_BOLD if dlg.focus == 2 else curses.color_pair(10)
         cancel_a = curses.color_pair(3) | curses.A_BOLD if dlg.focus == 3 else curses.color_pair(10)
         _add(stdscr, btn_y, ax, apply_l, apply_a, dw(apply_l))
-        app.hits.append(Hit(Rect(btn_y, ax, 1, dw(apply_l)), "dialog", "apply"))
+        ctx.hits.append(Hit(Rect(btn_y, ax, 1, dw(apply_l)), "dialog", "apply"))
         ax += dw(apply_l) + 2
         _add(stdscr, btn_y, ax, cancel_l, cancel_a, dw(cancel_l))
-        app.hits.append(Hit(Rect(btn_y, ax, 1, dw(cancel_l)), "dialog", "cancel"))
+        ctx.hits.append(Hit(Rect(btn_y, ax, 1, dw(cancel_l)), "dialog", "cancel"))
 
     def _sync_preview(self) -> str:
         parts = [f"repo sync -j{self.sync_jobs}"]
@@ -637,7 +646,7 @@ class ScmPage:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _start_sync(self, app) -> None:
+    def _start_sync(self, ctx) -> None:
         try:
             argv = sync_argv(self.top, self.sync_jobs, self.sync_force, not self.sync_ignore)
         except FileNotFoundError:
@@ -647,7 +656,7 @@ class ScmPage:
         log = LogBuffer()
         self.log = log
         self.log_scroll = 0
-        app._wrap_key = None
+        ctx.invalidate_wrap()
         self.status_key = ""
         self.status_args = {}
         session = CommandSession(self.top, argv, on_data=log.feed)
@@ -655,7 +664,7 @@ class ScmPage:
         self._reaped = False
         self.page = SCM_SYNC
         session.start()
-        rows, cols = app._stdscr.getmaxyx() if app._stdscr is not None else (24, 80)
+        rows, cols = ctx.stdscr.getmaxyx() if ctx.stdscr is not None else (24, 80)
         _left, _gap, _cy, _cx, ch, cw = _panel_geom(rows, cols)
         session.set_winsize(max(8, ch - 8), max(20, cw - 4))
 
@@ -667,25 +676,25 @@ class ScmPage:
             return
         self.result_index = min(max(0, self.result_index + delta), n - 1)
 
-    def wheel(self, app, delta: int) -> None:
+    def wheel(self, ctx, delta: int) -> None:
         if self.page == SCM_RESULT:
             self.move_result(delta)
             return
         if self.page == SCM_SYNC:
-            max_off = max(0, len(app._wrapped) - max(1, app._log_geom.h))
+            max_off = max(0, len(ctx.wrapped) - max(1, ctx.log_geom.h))
             self.log_scroll = min(max(0, self.log_scroll - delta), max_off)
         elif self.page == SCM_HOME:
             self.home_focus = min(max(0, self.home_focus + (1 if delta > 0 else -1)), len(_SCM_HOME_ITEMS) - 1)
 
-    def key_dialog(self, app, ch: int) -> bool:
+    def key_dialog(self, ctx, ch: int) -> bool:
         dlg = self.dialog
         if dlg is None:
             return False
         if ch in (ord("q"), ord("Q")):
-            app._action("dialog", "cancel")
-            return app._leave
+            ctx.action("dialog", "cancel")
+            return ctx.leave
         if dlg.kind == "settings":
-            return self._key_settings_dialog(app, ch)
+            return self._key_settings_dialog(ctx, ch)
         n = len(dlg.choices)
         if n == 0:
             return False
@@ -694,12 +703,12 @@ class ScmPage:
         elif ch in (curses.KEY_DOWN, 9):
             dlg.focus = (dlg.focus + 1) % n
         elif ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
-            app._action("dialog", dlg.choices[dlg.focus][0])
+            ctx.action("dialog", dlg.choices[dlg.focus][0])
         elif ch in (curses.KEY_LEFT, curses.KEY_RIGHT):
-            app._cycle_tab(-1 if ch == curses.KEY_LEFT else 1)
+            ctx.cycle_tab(-1 if ch == curses.KEY_LEFT else 1)
         return False
 
-    def _key_settings_dialog(self, app, ch: int) -> bool:
+    def _key_settings_dialog(self, ctx, ch: int) -> bool:
         dlg = self.dialog
         if dlg is None:
             return False
@@ -735,12 +744,12 @@ class ScmPage:
             return False
         if ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
             if name == "apply":
-                app._action("dialog", "apply")
+                ctx.action("dialog", "apply")
             elif name == "cancel":
-                app._action("dialog", "cancel")
+                ctx.action("dialog", "cancel")
         return False
 
-    def key(self, app, ch: int) -> bool:
+    def key(self, ctx, ch: int) -> bool:
         if self.page == SCM_HOME:
             if ch in (curses.KEY_UP,):
                 self.home_focus = max(0, self.home_focus - 1)
@@ -749,7 +758,7 @@ class ScmPage:
                 self.home_focus = min(len(_SCM_HOME_ITEMS) - 1, self.home_focus + 1)
                 return True
             if ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
-                app._action("scm_home", _SCM_HOME_ITEMS[self.home_focus][0])
+                ctx.action("scm_home", _SCM_HOME_ITEMS[self.home_focus][0])
                 return True
             return False
         if self.page == SCM_RESULT:
@@ -775,7 +784,7 @@ class ScmPage:
                 return True
             return False
         if self.page == SCM_SYNC_CFG:
-            return self._key_sync_cfg(app, ch)
+            return self._key_sync_cfg(ctx, ch)
         if self.page == SCM_SYNC:
             if ch in (curses.KEY_UP, _WHEEL_UP):
                 self.log_scroll += 1
@@ -794,12 +803,12 @@ class ScmPage:
                 return True
             running = self.session is not None and self.session.running
             if not running and ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
-                app._action("scm_back")
+                ctx.action("scm_back")
                 return True
             return True
         return False
 
-    def _key_sync_cfg(self, app, ch: int) -> bool:
+    def _key_sync_cfg(self, ctx, ch: int) -> bool:
         if ch in (9, curses.KEY_DOWN):
             self.focus = (self.focus + 1) % len(_SCM_SYNC_FOCUS)
             return True
@@ -831,11 +840,11 @@ class ScmPage:
             self.sync_ignore = _cycle((True, False), self.sync_ignore, ch)
             return True
         if name == "sync_start" and ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
-            self._start_sync(app)
+            self._start_sync(ctx)
             return True
         return False
 
-    def handle_action(self, app, action: str, payload: object = None) -> bool:
+    def click(self, ctx, action: str, payload: object = None) -> bool:
         if action == "focus" and payload == "check_jobs":
             if self.dialog is not None and self.dialog.kind == "settings":
                 self.dialog.focus = 1
@@ -885,7 +894,7 @@ class ScmPage:
             return True
         if action == "sync_start":
             self.set_focus("sync_start")
-            self._start_sync(app)
+            self._start_sync(ctx)
             return True
         if action == "scm_back":
             self.page = SCM_HOME
