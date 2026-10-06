@@ -50,6 +50,7 @@ from term import (
     dw,
     wrap_words,
 )
+from widgets import chip_row, fill_btn, jobs_row, option_block, yes_no
 
 SCM_HOME = "home"
 SCM_CHECK = "check"
@@ -290,8 +291,9 @@ class ScmPage:
             _add(stdscr, row, xx, app._t("scm_sync_jobs"), curses.color_pair(15) | curses.A_DIM, inner)
             row += 1
         if row < limit:
-            app._jobs_row(
+            jobs_row(
                 stdscr,
+                app.hits,
                 row,
                 xx,
                 inner,
@@ -301,26 +303,28 @@ class ScmPage:
                 focused=self.has_focus("sync_jobs"),
             )
             row += 2
-        row = app._option_block(
+        row = option_block(
             stdscr,
+            app.hits,
             row,
             xx,
             inner,
             limit,
             app._t("scm_sync_force"),
-            app._yes_no(),
+            yes_no(app._t),
             self.sync_force,
             "sync_force",
             title_attr=curses.color_pair(5) | curses.A_BOLD,
         )
-        app._option_block(
+        option_block(
             stdscr,
+            app.hits,
             row,
             xx,
             inner,
             limit,
             app._t("scm_sync_ignore"),
-            app._yes_no(),
+            yes_no(app._t),
             self.sync_ignore,
             "sync_ignore",
             gap=0,
@@ -341,7 +345,7 @@ class ScmPage:
         attr = curses.color_pair(3) | curses.A_BOLD
         if self.has_focus("sync_start"):
             attr = curses.color_pair(3) | curses.A_BOLD
-        app._fill_btn(stdscr, btn_y, btn_x, 3, btn_w, start_label, attr, "sync_start")
+        fill_btn(stdscr, app.hits, btn_y, btn_x, 3, btn_w, start_label, attr, "sync_start")
         app._draw_lang_bar(stdscr, y + h - 2, xx, inner)
 
     def _draw_sync(self, app, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
@@ -388,7 +392,7 @@ class ScmPage:
                 text = (" " * left + btn + " " * right) if i == 1 else " " * btn_w
                 _add(stdscr, btn_y + i, btn_x, text, dim, btn_w)
         else:
-            app._fill_btn(stdscr, btn_y, btn_x, 3, btn_w, btn, curses.color_pair(9) | curses.A_BOLD, "scm_back")
+            fill_btn(stdscr, app.hits, btn_y, btn_x, 3, btn_w, btn, curses.color_pair(9) | curses.A_BOLD, "scm_back")
         app._draw_lang_bar(stdscr, y + h - 2, xx, inner)
 
     def draw_dialog(self, app, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
@@ -481,8 +485,9 @@ class ScmPage:
             _add(stdscr, row, cx, transport_title, curses.color_pair(15) | curses.A_DIM, cw)
             row += 1
         if row < limit:
-            app._chip_row(
+            chip_row(
                 stdscr,
+                app.hits,
                 row,
                 cx,
                 cw,
@@ -495,8 +500,9 @@ class ScmPage:
             _add(stdscr, row, cx, jobs_title, curses.color_pair(15) | curses.A_DIM, cw)
             row += 1
         if row < limit:
-            app._jobs_row(
+            jobs_row(
                 stdscr,
+                app.hits,
                 row,
                 cx,
                 cw,
