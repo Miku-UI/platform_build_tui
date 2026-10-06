@@ -238,10 +238,18 @@ def repo_argv(top: Path) -> list[str]:
     raise FileNotFoundError("repo")
 
 
-def sync_argv(top: Path, jobs: int, force_checkout: bool, fail_fast: bool) -> list[str]:
+def sync_argv(
+    top: Path,
+    jobs: int,
+    force_checkout: bool,
+    fail_fast: bool,
+    force_sync: bool = False,
+) -> list[str]:
     argv = repo_argv(top) + ["sync", f"-j{max(1, int(jobs))}"]
     if force_checkout:
         argv.append("--force-checkout")
+    if force_sync:
+        argv.append("--force-sync")
     if fail_fast:
         argv.append("--fail-fast")
     return argv

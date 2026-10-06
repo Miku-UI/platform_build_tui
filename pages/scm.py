@@ -67,7 +67,7 @@ _SCM_HOME_ITEMS = (
 )
 _GIT_TRANSPORTS = (GIT_HTTPS, GIT_SSH)
 _SETTINGS_FOCUS = ("transport", "check_jobs", "apply", "cancel")
-_SCM_SYNC_FOCUS = ("sync_jobs", "sync_force", "sync_ignore", "sync_start")
+_SCM_SYNC_FOCUS = ("sync_jobs", "sync_force", "sync_force_sync", "sync_ignore", "sync_start")
 _SCM_STATUS_KEY = {
     STATUS_AHEAD: "scm_status_ahead",
     STATUS_BEHIND: "scm_status_behind",
@@ -99,6 +99,7 @@ class ScmPage(Page):
         self.focus = 0
         self.sync_jobs = 4
         self.sync_force = False
+        self.sync_force_sync = False
         self.sync_ignore = True
         self.log = LogBuffer()
         self.log_scroll = 0
@@ -326,6 +327,19 @@ class ScmPage(Page):
             "sync_force",
             title_attr=curses.color_pair(5) | curses.A_BOLD,
         )
+        row = option_block(
+            stdscr,
+            ctx.hits,
+            row,
+            xx,
+            inner,
+            limit,
+            ctx.t("scm_sync_force_sync"),
+            yes_no(ctx.t),
+            self.sync_force_sync,
+            "sync_force_sync",
+            title_attr=curses.color_pair(5) | curses.A_BOLD,
+        )
         option_block(
             stdscr,
             ctx.hits,
@@ -442,7 +456,7 @@ class ScmPage(Page):
             cy += 1
         for i, ((payload, _key), rows) in enumerate(zip(dlg.choices, choice_rows)):
             selected = i == dlg.focus
-            if dlg.kind == "force" and payload == "force_ok":
+            if dlg.kind in ("force", "force_sync") and payload in ("force_ok", "force_sync_ok"):
                 attr = curses.color_pair(8) | curses.A_BOLD if selected else curses.color_pair(5)
             else:
                 attr = curses.color_pair(3) | curses.A_BOLD if selected else curses.color_pair(2)
@@ -534,6 +548,8 @@ class ScmPage(Page):
         parts = [f"repo sync -j{self.sync_jobs}"]
         if self.sync_force:
             parts.append("--force-checkout")
+        if self.sync_force_sync:
+            parts.append("--force-sync")
         if not self.sync_ignore:
             parts.append("--fail-fast")
         return " ".join(parts)
@@ -593,6 +609,17 @@ class ScmPage(Page):
             kind="force",
         )
 
+    def _open_force_sync_dialog(self) -> None:
+        self.dialog = Dialog(
+            title_key="scm_sync_warn_title",
+            body_key="scm_sync_force_sync_warn_body",
+            choices=(
+                ("force_sync_ok", "scm_sync_warn_ok"),
+                ("cancel", "cancel"),
+            ),
+            kind="force_sync",
+        )
+
     def _open_settings_dialog(self) -> None:
         self.dialog = Dialog(
             title_key="scm_settings",
@@ -648,7 +675,13 @@ class ScmPage(Page):
 
     def _start_sync(self, ctx) -> None:
         try:
-            argv = sync_argv(self.top, self.sync_jobs, self.sync_force, not self.sync_ignore)
+            argv = sync_argv(
+                self.top,
+                self.sync_jobs,
+                self.sync_force,
+                not self.sync_ignore,
+                self.sync_force_sync,
+            )
         except FileNotFoundError:
             self.status_key = "scm_no_repo"
             self.status_args = {}
@@ -836,6 +869,14 @@ class ScmPage(Page):
                 else:
                     self.sync_force = False
             return True
+        if name == "sync_force_sync":
+            nxt = _cycle((True, False), self.sync_force_sync, ch)
+            if nxt != self.sync_force_sync:
+                if nxt:
+                    self._open_force_sync_dialog()
+                else:
+                    self.sync_force_sync = False
+            return True
         if name == "sync_ignore":
             self.sync_ignore = _cycle((True, False), self.sync_ignore, ch)
             return True
@@ -887,6 +928,14 @@ class ScmPage(Page):
                 elif not payload:
                     self.sync_force = False
             return True
+        if action == "sync_force_sync":
+            self.set_focus("sync_force_sync")
+            if isinstance(payload, bool):
+                if payload and not self.sync_force_sync:
+                    self._open_force_sync_dialog()
+                elif not payload:
+                    self.sync_force_sync = False
+            return True
         if action == "sync_ignore":
             self.set_focus("sync_ignore")
             if isinstance(payload, bool):
@@ -918,6 +967,8 @@ class ScmPage(Page):
             if payload == "cancel":
                 if kind == "force":
                     self.sync_force = False
+                elif kind == "force_sync":
+                    self.sync_force_sync = False
             elif payload == "apply" and kind == "settings":
                 if draft in _GIT_TRANSPORTS:
                     self.git_transport = draft
@@ -926,5 +977,7 @@ class ScmPage(Page):
                 self._start_check(payload)
             elif payload == "force_ok":
                 self.sync_force = True
+            elif payload == "force_sync_ok":
+                self.sync_force_sync = True
             return True
         return False
