@@ -16,12 +16,15 @@ from __future__ import annotations
 
 import base64
 import curses
+import fcntl
 import locale
 import os
 import shutil
 import socket
+import struct
 import subprocess
 import sys
+import termios
 import threading
 import time
 import unicodedata
@@ -760,7 +763,10 @@ class BuildTui:
             self._stopping = None
 
     def _draw(self, stdscr: curses.window) -> None:
-        stdscr.erase()
+        if _sync_curses_size(stdscr):
+            stdscr.clear()
+        else:
+            stdscr.erase()
         self.hits = []
         self._scroll_geom = Rect(0, 0, 0, 0)
         self._log_geom = Rect(0, 0, 0, 0)
@@ -2171,6 +2177,42 @@ def clip(text: str, width: int) -> str:
         out.append(ch)
         used += w
     return "".join(out)
+
+
+def _tty_winsize(fd: int = 1) -> tuple[int, int] | None:
+    try:
+        rows, cols = struct.unpack("HHHH", fcntl.ioctl(fd, termios.TIOCGWINSZ, bytes(8)))[:2]
+    except OSError:
+        return None
+    if rows < 1 or cols < 1:
+        return None
+    return rows, cols
+
+
+def _sync_curses_size(stdscr: curses.window) -> bool:
+    # The TUI daemon is not always the SIGWINCH target, so curses LINES/COLS
+    # can stay frozen after a terminal resize. Read the tty size ourselves.
+    size = _tty_winsize()
+    if size is None:
+        return False
+    rows, cols = size
+    try:
+        cur_rows, cur_cols = stdscr.getmaxyx()
+    except curses.error:
+        cur_rows, cur_cols = 0, 0
+    if rows == cur_rows and cols == cur_cols:
+        return False
+    for apply in (
+        lambda: curses.resizeterm(rows, cols),
+        lambda: curses.resize_term(rows, cols),
+        lambda: stdscr.resize(rows, cols),
+    ):
+        try:
+            apply()
+            return True
+        except (curses.error, AttributeError):
+            continue
+    return False
 
 
 def _add(win: curses.window, y: int, x: int, text: str, attr: int, width: int) -> None:
