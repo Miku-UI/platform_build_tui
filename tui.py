@@ -108,6 +108,8 @@ _CLOSE_MARK = "[x]"
 _CLOSE_W = 3
 _MIN_MARK = "[-]"
 _MIN_W = 3
+_SCROLL_TRACK = "▕"
+_SCROLL_THUMB = "▐"
 
 
 def _cycle(values: tuple, current, ch: int):
@@ -489,6 +491,33 @@ def clip_cells(cells: list[Cell], width: int) -> list[Cell]:
     return out
 
 
+def _thumb_geom(content: int, view: int, start: int, track: int) -> tuple[int, int]:
+    view = max(1, view)
+    track = max(1, track)
+    content = max(view, content)
+    thumb_h = max(1, min(track, (view * track) // content))
+    max_start = content - view
+    travel = track - thumb_h
+    if max_start <= 0 or travel <= 0:
+        return 0, track
+    start = min(max(0, start), max_start)
+    thumb_y = (start * travel + max_start // 2) // max_start
+    return min(thumb_y, travel), thumb_h
+
+
+def _start_from_thumb(thumb_y: int, content: int, view: int, track: int) -> int:
+    view = max(1, view)
+    track = max(1, track)
+    content = max(view, content)
+    thumb_h = max(1, min(track, (view * track) // content))
+    max_start = content - view
+    travel = track - thumb_h
+    if max_start <= 0 or travel <= 0:
+        return 0
+    thumb_y = min(max(0, thumb_y), travel)
+    return (thumb_y * max_start + travel // 2) // travel
+
+
 class BuildTui:
     def __init__(
         self,
@@ -566,6 +595,8 @@ class BuildTui:
         self._click_guard: tuple[float, str, object] = (0.0, "", None)
         self._stdscr: curses.window | None = None
         self._log_geom = Rect(0, 0, 0, 0)
+        self._scroll_geom = Rect(0, 0, 0, 0)
+        self._scroll_drag: int | None = None
         self._wrapped: list[list[Cell]] = []
         self._view_start = 0
         self._selecting = False
@@ -717,6 +748,7 @@ class BuildTui:
     def _draw(self, stdscr: curses.window) -> None:
         stdscr.erase()
         self.hits = []
+        self._scroll_geom = Rect(0, 0, 0, 0)
         rows, cols = stdscr.getmaxyx()
         if rows < 16 or cols < 60:
             _add(stdscr, 0, 0, self._t("term_too_small"), curses.color_pair(2) | curses.A_BOLD, cols)
@@ -1151,6 +1183,7 @@ class BuildTui:
         self._log_geom = Rect(log_top, xx, log_h, log_w)
         self.log.set_size(max(2, log_h), max(20, log_w))
         self._draw_log(stdscr, log_top, xx, log_h, log_w)
+        self._draw_log_scrollbar(stdscr, log_top, x + w - 2, log_h)
         if session is not None:
             session.set_winsize(max(2, log_h), max(20, log_w))
         btn = self._t("stop") if self.mode == MODE_BUILD else self._t("back")
@@ -1335,6 +1368,50 @@ class BuildTui:
                     fill_attr |= curses.A_REVERSE
                     _add(stdscr, y + i, x + col, " " * (w - col), fill_attr, w - col)
 
+    def _draw_log_scrollbar(self, stdscr: curses.window, y: int, x: int, h: int) -> None:
+        content = len(self._wrapped)
+        if h <= 0 or content <= h:
+            return
+        # Padding column plus the frame so the thumb is easier to grab.
+        self._scroll_geom = Rect(y, x, h, 2)
+        thumb_y, thumb_h = _thumb_geom(content, h, self._view_start, h)
+        track_a = curses.color_pair(10)
+        thumb_a = curses.color_pair(11) | curses.A_BOLD
+        if self._scroll_drag is not None:
+            thumb_a = curses.color_pair(15) | curses.A_BOLD
+        for i in range(h):
+            glyph = _SCROLL_THUMB if thumb_y <= i < thumb_y + thumb_h else _SCROLL_TRACK
+            attr = thumb_a if glyph == _SCROLL_THUMB else track_a
+            _add(stdscr, y + i, x, glyph, attr, 1)
+
+    def _begin_scroll_drag(self, my: int) -> None:
+        self._btn_down = False
+        self._btn_hit = None
+        self._selecting = False
+        self._sel_a = None
+        self._sel_b = None
+        geom = self._scroll_geom
+        content = len(self._wrapped)
+        if geom.h <= 0 or content <= geom.h:
+            return
+        thumb_y, thumb_h = _thumb_geom(content, geom.h, self._view_start, geom.h)
+        rel = my - geom.y
+        if thumb_y <= rel < thumb_y + thumb_h:
+            self._scroll_drag = rel - thumb_y
+        else:
+            self._scroll_drag = thumb_h // 2
+        self._apply_scroll_drag(my)
+
+    def _apply_scroll_drag(self, my: int) -> None:
+        geom = self._scroll_geom
+        content = len(self._wrapped)
+        if geom.h <= 0 or content <= geom.h or self._scroll_drag is None:
+            return
+        thumb_y = my - geom.y - self._scroll_drag
+        start = _start_from_thumb(thumb_y, content, geom.h, geom.h)
+        # log_scroll is counted from the tail so 0 keeps following new output.
+        self.log_scroll = max(0, content - geom.h) - start
+
     def _hit_at(self, y: int, x: int) -> Hit | None:
         for hit in reversed(self.hits):
             if hit.rect.contains(y, x):
@@ -1344,6 +1421,7 @@ class BuildTui:
     def _cancel_press(self) -> None:
         self._btn_down = False
         self._btn_hit = None
+        self._scroll_drag = None
 
     def _fire_click(self, action: str, payload: object) -> None:
         now = time.time()
@@ -1372,6 +1450,22 @@ class BuildTui:
         released = bool(bstate & curses.BUTTON1_RELEASED)
         clicked = bool(bstate & curses.BUTTON1_CLICKED)
         report = bool(bstate & getattr(curses, "REPORT_MOUSE_POSITION", 0))
+        if self._scroll_drag is not None:
+            if pressed or report:
+                self._apply_scroll_drag(my)
+                return
+            if released:
+                self._apply_scroll_drag(my)
+                self._cancel_press()
+                return
+            return
+        if pressed and self._scroll_geom.contains(my, mx):
+            self._begin_scroll_drag(my)
+            return
+        if clicked and not self._btn_down and self._scroll_geom.contains(my, mx):
+            self._begin_scroll_drag(my)
+            self._cancel_press()
+            return
         in_log = self.mode in (MODE_BUILD, MODE_DONE) and self._log_geom.contains(my, mx)
         if self._selecting and (pressed or report):
             pos = self._log_pos(my, mx, clamp=True)
@@ -1719,6 +1813,7 @@ class BuildTui:
         self._sel_a = None
         self._sel_b = None
         self._selecting = False
+        self._scroll_drag = None
         self._set_status()
         config = BuildConfig(
             product=self.selected,
@@ -1788,6 +1883,7 @@ class BuildTui:
         )
         self.report = report
         self.result_scroll = 0
+        self._scroll_drag = None
         self.mode = MODE_RESULT
 
 
