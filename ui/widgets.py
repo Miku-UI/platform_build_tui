@@ -54,18 +54,31 @@ def chip_row(
     options: tuple[tuple[object, str], ...],
     current: object,
     action: str,
-) -> None:
+    limit: int | None = None,
+) -> int:
     cx = x
+    y0 = y
+    last_y = y
+    drew = False
     for value, label in options:
         chosen = current == value
         text = f" {label} "
         attr = curses.color_pair(3) | curses.A_BOLD if chosen else curses.color_pair(10)
         w = dw(text)
-        if cx + w - x > width:
+        if w > width:
+            text = clip(text, width)
+            w = dw(text)
+        if cx > x and cx + w - x > width:
+            y += 1
+            cx = x
+        if limit is not None and y >= limit:
             break
         _add(stdscr, y, cx, text, attr, w)
         hits.append(Hit(Rect(y, cx, 1, w), action, value))
+        last_y = y
+        drew = True
         cx += w + 1
+    return (last_y - y0 + 1) if drew else 1
 
 
 def option_block(
@@ -88,8 +101,7 @@ def option_block(
         _add(stdscr, row, x, title, attr, width)
         row += 1
     if row < limit:
-        chip_row(stdscr, hits, row, x, width, options, current, action)
-        row += 1
+        row += chip_row(stdscr, hits, row, x, width, options, current, action, limit)
     return row + gap
 
 
@@ -107,6 +119,35 @@ def box_btn(
     attr = curses.color_pair(3) | curses.A_BOLD if focused else curses.color_pair(12)
     _add(stdscr, y, x, clip(" " + label, width), attr, width)
     hits.append(Hit(Rect(y, x, 1, width), action, payload))
+
+
+def text_field(
+    stdscr: curses.window,
+    hits: list[Hit],
+    y: int,
+    x: int,
+    width: int,
+    value: str,
+    placeholder: str,
+    action: str,
+    focused: bool,
+    cursor: int = 0,
+) -> int:
+    """One-line input. Returns the screen column of the cursor."""
+    inner = max(1, width - 2)
+    cursor = min(max(0, cursor), len(value))
+    start = 0
+    if cursor - start >= inner:
+        start = cursor - inner + 1
+    shown = value[start : start + inner] if value else clip(placeholder, inner)
+    pad = max(0, inner - dw(shown))
+    text = " " + shown + " " * pad
+    if dw(text) < width:
+        text += " "
+    attr = curses.color_pair(13) | (curses.A_BOLD if focused else 0)
+    _add(stdscr, y, x, clip(text, width), attr, width)
+    hits.append(Hit(Rect(y, x, 1, width), action, None))
+    return x + 1 + (cursor - start)
 
 
 def fill_btn(

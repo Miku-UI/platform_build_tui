@@ -89,6 +89,7 @@ class BuildReport:
     key_rel: str | None
     fail_stage: str | None
     failures: list[FailItem]
+    show_sha256: bool = True
     artifact_abs: Path | None = None
 
 
@@ -464,6 +465,7 @@ def build_report(
     package_hint: str | None,
     log_rows: list[list[Glyph]],
     gapps: bool,
+    show_sha256: bool = True,
 ) -> BuildReport:
     finished = max(finished, started)
     out_dir = product_out(top, product)
@@ -495,7 +497,8 @@ def build_report(
                 artifact_size = None
             if artifact_size is not None and "size_bytes" in prev:
                 size_delta = artifact_size - prev["size_bytes"]
-        sha256 = read_sha256sum(artifact_abs) if artifact_abs is not None else None
+        if show_sha256:
+            sha256 = read_sha256sum(artifact_abs) if artifact_abs is not None else None
         cert = read_certificate(out_dir)
         if cert:
             signed = not is_aosp_testkey(cert)
@@ -539,5 +542,6 @@ def build_report(
         key_rel=key_rel,
         fail_stage=fail_stage,
         failures=failures,
+        show_sha256=show_sha256,
         artifact_abs=artifact_abs,
     )

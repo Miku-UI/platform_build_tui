@@ -19,9 +19,20 @@ import os
 import shutil
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
-from core.builder import BuildConfig, BuildSession
+from core.builder import (
+    CUSTOM_TARGET_MAX,
+    TARGET_CUSTOM,
+    TARGET_FASTBOOT,
+    TARGET_KINDS,
+    TARGET_OTA,
+    BuildConfig,
+    BuildSession,
+    resolve_make_target,
+    sanitize_make_targets,
+)
 from core.devices import Product, resolve_device
 from ui.logbuf import LogBuffer
 from pages.result import result_rows
@@ -43,7 +54,7 @@ from ui.term import (
     dw,
 )
 from ui.ctx import Page
-from ui.widgets import box_btn, fill_btn, jobs_row, option_block, yes_no
+from ui.widgets import box_btn, fill_btn, jobs_row, option_block, text_field, yes_no
 
 MODE_CONFIG = "config"
 MODE_PICKER = "picker"
@@ -56,7 +67,17 @@ CLEAN_INSTALL = "installclean"
 CLEAN_FULL = "clean"
 
 VARIANTS = ("user", "userdebug", "eng")
-_FOCUS = ("device", "variant", "jobs", "gapps", "ccache", "keep_going", "clean", "build")
+_FOCUS = ("device", "variant", "target", "jobs", "gapps", "ccache", "keep_going", "clean", "build")
+_CUSTOM_FOCUS_INPUT = 0
+_CUSTOM_FOCUS_OK = 1
+
+
+@dataclass
+class CustomTargetDialog:
+    text: str
+    cursor: int
+    focus: int = _CUSTOM_FOCUS_INPUT
+    error: bool = False
 
 
 class BuildPage(Page):
@@ -100,6 +121,9 @@ class BuildPage(Page):
         else:
             self.ccache = shutil.which("ccache") is not None
         self.keep_going = prefs.keep_going if prefs.keep_going is not None else False
+        self.target_kind = TARGET_OTA
+        self.custom_target = ""
+        self.custom_dialog: CustomTargetDialog | None = None
         self.clean = clean
         self.selected: Product | None = None
         if prefs.device:
@@ -128,6 +152,15 @@ class BuildPage(Page):
         self._stopping: BuildSession | None = None
         self.status_key = ""
         self.status_args: dict[str, object] = {}
+
+    def overlay(self) -> bool:
+        return self.custom_dialog is not None
+
+    def draw_overlay(self, ctx, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        self._draw_custom_dialog(ctx, stdscr, y, x, h, w)
+
+    def key_overlay(self, ctx, ch: int) -> bool:
+        return self._key_custom_dialog(ctx, ch)
 
     def has_focus(self, name: str) -> bool:
         return 0 <= self.focus < len(_FOCUS) and _FOCUS[self.focus] == name
@@ -173,6 +206,9 @@ class BuildPage(Page):
             self._stopping = None
 
     def close(self) -> bool:
+        if self.custom_dialog is not None:
+            self.custom_dialog = None
+            return True
         if self.mode == MODE_PICKER:
             self.mode = MODE_CONFIG
             return True
@@ -231,6 +267,19 @@ class BuildPage(Page):
             tuple((name, name) for name in VARIANTS),
             self.variant,
             "variant",
+        )
+        shown_kind = TARGET_CUSTOM if self.custom_dialog is not None else self.target_kind
+        row = option_block(
+            stdscr,
+            hits,
+            row,
+            xx,
+            inner,
+            limit,
+            ctx.t("target"),
+            self._target_options(ctx),
+            shown_kind,
+            "target",
         )
         if row < limit:
             _add(stdscr, row, xx, ctx.t("jobs"), curses.color_pair(15) | curses.A_DIM, inner)
@@ -359,7 +408,10 @@ class BuildPage(Page):
 
     def _draw_build(self, ctx, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         session = self.session
-        combo = session.config.lunch_combo if session else self.combo_preview()
+        if session is not None:
+            combo = f"{session.config.lunch_combo}  make {session.config.make_target}  -j{session.config.jobs}"
+        else:
+            combo = self.combo_preview()
         elapsed = ""
         if session is not None:
             end = session.finished_at or time.time()
@@ -445,7 +497,18 @@ class BuildPage(Page):
         if self.clean != CLEAN_NONE:
             extras.append(self.clean)
         extra = ("  " + " ".join(extras)) if extras else ""
-        return f"{name}-{self.release}-{self.variant}  -j{self.jobs}{extra}"
+        return f"{name}-{self.release}-{self.variant}  make {self._make_target()}  -j{self.jobs}{extra}"
+
+    def _make_target(self) -> str:
+        return resolve_make_target(self.target_kind, self.custom_target)
+
+    def _target_options(self, ctx) -> tuple[tuple[object, str], ...]:
+        custom = self.custom_target if self.custom_target else ctx.t("target_custom")
+        return (
+            (TARGET_OTA, ctx.t("target_ota")),
+            (TARGET_FASTBOOT, ctx.t("target_fastboot")),
+            (TARGET_CUSTOM, custom),
+        )
 
     def wheel(self, ctx, delta: int) -> None:
         if self.mode == MODE_PICKER:
@@ -484,6 +547,15 @@ class BuildPage(Page):
             self._open_picker()
         elif name == "variant":
             self.variant = _cycle(VARIANTS, self.variant, ch)
+        elif name == "target":
+            if self.target_kind == TARGET_CUSTOM and ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
+                self._open_custom_dialog()
+            else:
+                nxt = _cycle(TARGET_KINDS, self.target_kind, ch)
+                if nxt == TARGET_CUSTOM:
+                    self._open_custom_dialog()
+                elif nxt in TARGET_KINDS:
+                    self.target_kind = nxt
         elif name == "jobs":
             if ch in (curses.KEY_LEFT, ord("-")):
                 self.jobs = max(1, self.jobs - 1)
@@ -567,6 +639,23 @@ class BuildPage(Page):
             if isinstance(payload, str) and payload in VARIANTS:
                 self.variant = payload
             return True
+        if action == "target":
+            self.set_focus("target")
+            if payload == TARGET_CUSTOM:
+                self._open_custom_dialog()
+            elif payload in TARGET_KINDS:
+                self.target_kind = payload
+            return True
+        if action == "target_custom_input":
+            if self.custom_dialog is not None:
+                self.custom_dialog.focus = _CUSTOM_FOCUS_INPUT
+            return True
+        if action == "target_custom_ok":
+            self._confirm_custom_dialog()
+            return True
+        if action == "target_custom_cancel":
+            self.custom_dialog = None
+            return True
         if action == "jobs":
             self.set_focus("jobs")
             delta = int(payload or 0)
@@ -627,6 +716,130 @@ class BuildPage(Page):
                 self.picker_index = 0
         self.mode = MODE_PICKER
 
+    def _open_custom_dialog(self) -> None:
+        text = self.custom_target
+        self.custom_dialog = CustomTargetDialog(text=text, cursor=len(text))
+        self.set_focus("target")
+
+    def _confirm_custom_dialog(self) -> None:
+        dlg = self.custom_dialog
+        if dlg is None:
+            return
+        cleaned = sanitize_make_targets(dlg.text)
+        if not cleaned:
+            dlg.error = True
+            dlg.focus = _CUSTOM_FOCUS_INPUT
+            return
+        self.custom_target = cleaned
+        self.target_kind = TARGET_CUSTOM
+        self.custom_dialog = None
+        self.set_status()
+
+    def _draw_custom_dialog(self, ctx, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        dlg = self.custom_dialog
+        if dlg is None:
+            return
+        title = ctx.t("target_custom")
+        ok_l = f" {ctx.t('target_custom_ok')} "
+        err = ctx.t("target_custom_invalid") if dlg.error else ""
+        box_w = min(w - 2, max(36, dw(title) + 8, dw(err) + 4, 28))
+        box_h = min(9 if dlg.error else 8, h - 2)
+        by = y + max(1, (h - box_h) // 2)
+        bx = x + max(1, (w - box_w) // 2)
+        fill_a = curses.color_pair(7)
+        for i in range(box_h):
+            _add(stdscr, by + i, bx, " " * box_w, fill_a, box_w)
+        _rounded_frame(stdscr, by, bx, box_h, box_w, curses.color_pair(12), f"✦  {title}", 0)
+        cx = bx + 2
+        cw = max(8, box_w - 4)
+        field_y = by + 2
+        cur_x = text_field(
+            stdscr,
+            ctx.hits,
+            field_y,
+            cx,
+            cw,
+            dlg.text,
+            "",
+            "target_custom_input",
+            dlg.focus == _CUSTOM_FOCUS_INPUT,
+            dlg.cursor,
+        )
+        if dlg.error and field_y + 1 < by + box_h - 2:
+            _add(stdscr, field_y + 1, cx, err, curses.color_pair(5) | curses.A_BOLD, cw)
+        btn_y = by + box_h - 2
+        ok_a = curses.color_pair(3) | curses.A_BOLD if dlg.focus == _CUSTOM_FOCUS_OK else curses.color_pair(10)
+        ok_x = cx + max(0, cw - dw(ok_l))
+        _add(stdscr, btn_y, ok_x, ok_l, ok_a, dw(ok_l))
+        ctx.hits.append(Hit(Rect(btn_y, ok_x, 1, dw(ok_l)), "target_custom_ok"))
+        if dlg.focus == _CUSTOM_FOCUS_INPUT:
+            try:
+                curses.curs_set(1)
+                stdscr.move(field_y, min(cur_x, cx + cw - 1))
+            except curses.error:
+                pass
+        else:
+            try:
+                curses.curs_set(0)
+            except curses.error:
+                pass
+
+    def _key_custom_dialog(self, ctx, ch: int) -> bool:
+        dlg = self.custom_dialog
+        if dlg is None:
+            return False
+        if ch in (ord("q"), ord("Q")) and dlg.focus == _CUSTOM_FOCUS_OK:
+            ctx.action("target_custom_cancel")
+            return ctx.leave
+        if ch in (9, curses.KEY_DOWN):
+            dlg.focus = _CUSTOM_FOCUS_OK
+            return False
+        if ch in (getattr(curses, "KEY_BTAB", 353), curses.KEY_UP):
+            dlg.focus = _CUSTOM_FOCUS_INPUT
+            return False
+        if dlg.focus == _CUSTOM_FOCUS_OK:
+            if ch in (curses.KEY_LEFT,):
+                dlg.focus = _CUSTOM_FOCUS_INPUT
+            elif ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
+                ctx.action("target_custom_ok")
+            return False
+        if ch in (curses.KEY_ENTER, 10, 13):
+            ctx.action("target_custom_ok")
+            return False
+        if ch in (curses.KEY_LEFT,):
+            dlg.cursor = max(0, dlg.cursor - 1)
+            return False
+        if ch in (curses.KEY_RIGHT,):
+            dlg.cursor = min(len(dlg.text), dlg.cursor + 1)
+            return False
+        if ch in (curses.KEY_HOME,):
+            dlg.cursor = 0
+            return False
+        if ch in (curses.KEY_END,):
+            dlg.cursor = len(dlg.text)
+            return False
+        if ch in (curses.KEY_BACKSPACE, 127, 8):
+            if dlg.cursor > 0:
+                dlg.text = dlg.text[: dlg.cursor - 1] + dlg.text[dlg.cursor :]
+                dlg.cursor -= 1
+                dlg.error = False
+            return False
+        if ch in (getattr(curses, "KEY_DC", 330),):
+            if dlg.cursor < len(dlg.text):
+                dlg.text = dlg.text[: dlg.cursor] + dlg.text[dlg.cursor + 1 :]
+                dlg.error = False
+            return False
+        if 32 <= ch <= 126:
+            char = chr(ch)
+            if char not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_./+- ":
+                return False
+            if len(dlg.text) >= CUSTOM_TARGET_MAX:
+                return False
+            dlg.text = dlg.text[: dlg.cursor] + char + dlg.text[dlg.cursor :]
+            dlg.cursor += 1
+            dlg.error = False
+        return False
+
     def _start_build(self, ctx) -> None:
         if self.selected is None:
             self.set_status("need_device")
@@ -634,6 +847,9 @@ class BuildPage(Page):
             return
         if self._stopping is not None and self._stopping.running:
             self.set_status("stopping")
+            return
+        if self.target_kind == TARGET_CUSTOM and not sanitize_make_targets(self.custom_target):
+            self._open_custom_dialog()
             return
         log = LogBuffer()
         phase = PhaseTracker()
@@ -644,6 +860,7 @@ class BuildPage(Page):
         self.result_scroll = 0
         ctx.clear_pointer_state()
         self.set_status()
+        make_target = self._make_target()
         config = BuildConfig(
             product=self.selected,
             jobs=self.jobs,
@@ -653,6 +870,8 @@ class BuildPage(Page):
             clean=self.clean,
             release=self.release,
             variant=self.variant,
+            make_target=make_target,
+            show_sha256=self.target_kind == TARGET_OTA,
         )
 
         def on_data(text: str, buf: LogBuffer = log, tracker: PhaseTracker = phase) -> None:
@@ -695,6 +914,7 @@ class BuildPage(Page):
             package_hint=package_path,
             log_rows=self.log.glyph_rows(),
             gapps=session.config.gapps,
+            show_sha256=session.config.show_sha256,
         )
         self.report = report
         self.result_scroll = 0

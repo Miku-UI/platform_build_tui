@@ -17,6 +17,7 @@ from __future__ import annotations
 import fcntl
 import os
 import pty
+import re
 import select
 import shlex
 import shutil
@@ -34,6 +35,41 @@ from core.devices import Product
 from core.phase import MARKER_PREFIX
 
 MAKE_TARGET = "diva"
+FASTBOOT_TARGET = "updatepackage"
+
+TARGET_OTA = "ota"
+TARGET_FASTBOOT = "fastboot"
+TARGET_CUSTOM = "custom"
+TARGET_KINDS = (TARGET_OTA, TARGET_FASTBOOT, TARGET_CUSTOM)
+
+_MAKE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.+/-]*$")
+CUSTOM_TARGET_MAX = 128
+
+
+def sanitize_make_targets(raw: str) -> str:
+    if len(raw) > CUSTOM_TARGET_MAX:
+        return ""
+    tokens: list[str] = []
+    for tok in raw.split():
+        if not _MAKE_TOKEN_RE.fullmatch(tok):
+            return ""
+        tokens.append(tok)
+    return " ".join(tokens)
+
+
+def resolve_make_target(kind: str, custom: str) -> str:
+    if kind == TARGET_FASTBOOT:
+        return FASTBOOT_TARGET
+    if kind == TARGET_CUSTOM:
+        cleaned = sanitize_make_targets(custom)
+        if cleaned:
+            return cleaned
+    return MAKE_TARGET
+
+
+def quote_make_target(raw: str) -> str:
+    tokens = sanitize_make_targets(raw).split() or [MAKE_TARGET]
+    return " ".join(shlex.quote(tok) for tok in tokens)
 
 
 @dataclass
@@ -46,6 +82,8 @@ class BuildConfig:
     release: str
     variant: str = "userdebug"
     keep_going: bool = False
+    make_target: str = MAKE_TARGET
+    show_sha256: bool = True
 
     @property
     def lunch_combo(self) -> str:
@@ -283,7 +321,7 @@ def _build_script(top: Path, config: BuildConfig, *, markers: bool = False) -> s
     if markers:
         lines.append(_phase_printf("make"))
     keep = " -k 0" if config.keep_going else ""
-    lines.append(f"make {MAKE_TARGET} -j{jobs}{keep}")
+    lines.append(f"make {quote_make_target(config.make_target)} -j{jobs}{keep}")
     lines.append("exit $?")
     return "\n".join(lines) + "\n"
 

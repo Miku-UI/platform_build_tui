@@ -264,6 +264,10 @@ class BuildTui:
             page.reap(ctx)
 
     def _draw(self, stdscr: curses.window) -> None:
+        try:
+            curses.curs_set(0)
+        except curses.error:
+            pass
         if _sync_curses_size(stdscr):
             stdscr.clear()
         else:

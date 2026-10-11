@@ -135,7 +135,8 @@ def result_rows(report: BuildReport, width: int, t) -> list[list[tuple[str, int]
         size = fmt_mb(report.artifact_size) if report.artifact_size is not None else t("result_unknown")
         kv(t("result_artifact_size"), size)
         kv(t("result_size_delta"), *delta_pair(report.size_delta, t("result_first"), True))
-        kv(t("result_sha256"), report.sha256 or t("result_unknown"))
+        if report.show_sha256:
+            kv(t("result_sha256"), report.sha256 or t("result_unknown"))
         if report.signed is True:
             kv(t("result_signed"), t("yes"), curses.color_pair(4) | curses.A_BOLD)
             if report.key_rel:
