@@ -227,15 +227,52 @@ def cancel_press(app) -> None:
     app._scroll_drag = None
 
 
+_CLICK_GUARD_S = 0.3
+_BUILD_TOGGLE = frozenset({"build", "stop_or_back"})
+GETCH_TIMEOUT_MS = 80
+
+
+def drain_mouse(app) -> None:
+    stdscr = getattr(app, "_stdscr", None)
+    if stdscr is None:
+        return
+    try:
+        stdscr.timeout(0)
+        while True:
+            ch = stdscr.getch()
+            if ch == curses.ERR:
+                break
+            if ch == curses.KEY_MOUSE:
+                try:
+                    curses.getmouse()
+                except curses.error:
+                    pass
+                continue
+            try:
+                curses.ungetch(ch)
+            except curses.error:
+                pass
+            break
+    finally:
+        try:
+            stdscr.timeout(GETCH_TIMEOUT_MS)
+        except curses.error:
+            pass
+
+
 def fire_click(app, action: str, payload: object) -> None:
     now = time.time()
     last_t, last_a, last_p = app._click_guard
-    if now - last_t < 0.2 and last_a == action and last_p == payload:
-        return
+    if now - last_t < _CLICK_GUARD_S:
+        if last_a == action and last_p == payload:
+            return
+        if frozenset({last_a, action}) == _BUILD_TOGGLE:
+            return
     app._click_guard = (now, action, payload)
     app._sel_a = None
     app._sel_b = None
     app._action(action, payload)
+    drain_mouse(app)
 
 
 def handle_mouse(app) -> None:
@@ -308,10 +345,12 @@ def handle_mouse(app) -> None:
         armed = app._btn_down
         press_hit = app._btn_hit
         cancel_press(app)
+        if not armed:
+            return
         hit = hit_at(app, my, mx)
         if hit is None:
             return
-        if armed and press_hit != (hit.action, hit.payload):
+        if press_hit != (hit.action, hit.payload):
             return
         fire_click(app, hit.action, hit.payload)
         return

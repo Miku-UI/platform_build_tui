@@ -70,6 +70,7 @@ VARIANTS = ("user", "userdebug", "eng")
 _FOCUS = ("device", "variant", "target", "jobs", "gapps", "ccache", "keep_going", "clean", "build")
 _CUSTOM_FOCUS_INPUT = 0
 _CUSTOM_FOCUS_OK = 1
+_STOP_GRACE_S = 0.4
 
 
 @dataclass
@@ -607,6 +608,8 @@ class BuildPage(Page):
         elif ch in (curses.KEY_END,):
             self.log_scroll = 0
         elif ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
+            if self._in_start_grace():
+                return False
             ctx.action("stop_or_back")
         elif ch in (ord("q"), ord("Q")) and self.mode == MODE_DONE:
             ctx.action("stop_or_back")
@@ -697,6 +700,8 @@ class BuildPage(Page):
             return True
         if action == "stop_or_back":
             if self.mode == MODE_BUILD:
+                if self._in_start_grace():
+                    return True
                 self._stop_build()
             elif self.mode == MODE_RESULT:
                 self.mode = MODE_DONE
@@ -885,6 +890,12 @@ class BuildPage(Page):
         rows, cols = ctx.stdscr.getmaxyx() if ctx.stdscr is not None else (24, 80)
         _left, _gap, _cy, _cx, ch, cw = _panel_geom(rows, cols)
         session.set_winsize(max(8, ch - 8), max(20, cw - 4))
+
+    def _in_start_grace(self) -> bool:
+        session = self.session
+        if session is None or self.mode != MODE_BUILD:
+            return False
+        return (time.time() - session.started_at) < _STOP_GRACE_S
 
     def _stop_build(self) -> None:
         session = self.session

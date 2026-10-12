@@ -25,6 +25,7 @@ from ui.ctx import Ctx, Page
 from core.devices import Product
 from ui.i18n import LANG_CHIPS, detect_lang, t
 from ui.input import (
+    GETCH_TIMEOUT_MS,
     cancel_press,
     draw_log,
     draw_log_scrollbar,
@@ -222,9 +223,11 @@ class BuildTui:
         curses.curs_set(0)
         curses.use_default_colors()
         stdscr.keypad(True)
-        stdscr.timeout(80)
+        stdscr.timeout(GETCH_TIMEOUT_MS)
         _init_colors()
         _enable_mouse()
+        cancel_press(self)
+        self._selecting = False
         try:
             while True:
                 self._reap()
@@ -236,6 +239,8 @@ class BuildTui:
                 if ch == curses.ERR:
                     continue
                 if ch == curses.KEY_RESIZE:
+                    _enable_mouse()
+                    cancel_press(self)
                     continue
                 if ch == curses.KEY_MOUSE:
                     self._mouse()
@@ -270,6 +275,8 @@ class BuildTui:
             pass
         if _sync_curses_size(stdscr):
             stdscr.clear()
+            _enable_mouse()
+            cancel_press(self)
         else:
             stdscr.erase()
         self.hits = []

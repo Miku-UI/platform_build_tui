@@ -440,6 +440,8 @@ def _disable_mouse() -> None:
 
 
 def _enable_mouse() -> None:
+    # resizeterm can drop ncurses' decoder while the terminal keeps sending SGR.
+    _disable_mouse()
     mask = (
         curses.BUTTON1_PRESSED
         | curses.BUTTON1_RELEASED
