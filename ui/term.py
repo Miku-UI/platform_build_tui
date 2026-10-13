@@ -371,7 +371,9 @@ def _init_colors() -> None:
         curses.init_pair(40, 75, -1)
         curses.init_pair(41, 114, -1)
         curses.init_pair(42, 250, -1)
+        curses.init_pair(43, 208, -1)
         curses.init_pair(44, 66, -1)
+        curses.init_pair(45, 177, -1)
         return
     curses.init_pair(1, curses.COLOR_CYAN, -1)
     curses.init_pair(2, curses.COLOR_WHITE, -1)
@@ -412,7 +414,9 @@ def _init_colors() -> None:
     curses.init_pair(40, curses.COLOR_BLUE, -1)
     curses.init_pair(41, curses.COLOR_GREEN, -1)
     curses.init_pair(42, curses.COLOR_WHITE, -1)
+    curses.init_pair(43, curses.COLOR_RED, -1)
     curses.init_pair(44, curses.COLOR_CYAN, -1)
+    curses.init_pair(45, curses.COLOR_WHITE, -1)
 
 
 def _ensure_utf8() -> None:

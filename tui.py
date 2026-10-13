@@ -368,8 +368,23 @@ class BuildTui:
             (self._t("info_os"), host.distro, "", 33),
             (self._t("info_cpu"), host.cpu_model, cpu_stat, 34),
             (self._t("info_ram"), fmt_pair(host.mem_used, host.mem_total), "", 35),
-            (self._t("info_disk"), fmt_pair(host.disk_used, host.disk_total), "", 36),
         ]
+        if host.zram is not None:
+            fields.append(
+                (self._t("info_zram"), fmt_pair(host.zram[0], host.zram[1]), "", 43)
+            )
+        if host.zswap is not None:
+            fields.append(
+                (
+                    self._t("info_zswap"),
+                    fmt_pair(host.zswap[0], host.zswap[1], orig=host.zswap[2]),
+                    "",
+                    45,
+                )
+            )
+        fields.append(
+            (self._t("info_disk"), fmt_pair(host.disk_used, host.disk_total), "", 36),
+        )
         label_w = max((dw(name) for name, _value, _extra, _pair in fields), default=0)
         rows: list[tuple[str, int]] = []
         for name, value, extra, pair in fields:

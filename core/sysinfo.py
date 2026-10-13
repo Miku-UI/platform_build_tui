@@ -135,6 +135,80 @@ def read_mem() -> tuple[int, int]:
     return used, total
 
 
+def _zram_orig_data(dev: Path) -> int:
+    try:
+        parts = (dev / "mm_stat").read_text(encoding="utf-8", errors="replace").split()
+        if parts:
+            return max(0, int(parts[0]))
+    except (OSError, ValueError):
+        pass
+    try:
+        return max(0, int((dev / "orig_data_size").read_text().strip()))
+    except (OSError, ValueError):
+        pass
+    return 0
+
+
+def read_zram() -> tuple[int, int] | None:
+    try:
+        devices = sorted(Path("/sys/block").glob("zram[0-9]*"))
+    except OSError:
+        return None
+    used = 0
+    total = 0
+    found = False
+    for dev in devices:
+        try:
+            disksize = int((dev / "disksize").read_text().strip())
+        except (OSError, ValueError):
+            continue
+        if disksize <= 0:
+            continue
+        found = True
+        total += disksize
+        used += _zram_orig_data(dev)
+    if not found:
+        return None
+    return min(used, total), total
+
+
+def read_zswap() -> tuple[int, int, int] | None:
+    try:
+        enabled = Path("/sys/module/zswap/parameters/enabled").read_text().strip().lower()
+    except OSError:
+        return None
+    if enabled not in ("1", "y", "on", "true"):
+        return None
+    try:
+        pct = int(Path("/sys/module/zswap/parameters/max_pool_percent").read_text().strip())
+    except (OSError, ValueError):
+        return None
+    if pct <= 0:
+        return None
+    info: dict[str, int] = {}
+    try:
+        for raw in Path("/proc/meminfo").read_text(encoding="utf-8", errors="replace").splitlines():
+            if ":" not in raw:
+                continue
+            key, rest = raw.split(":", 1)
+            num = rest.strip().split()[0]
+            try:
+                info[key] = int(num) * 1024
+            except ValueError:
+                continue
+    except OSError:
+        return None
+    ram = info.get("MemTotal", 0)
+    if ram <= 0:
+        return None
+    total = ram * min(pct, 100) // 100
+    if total <= 0:
+        return None
+    used = info.get("Zswap", 0)
+    orig = info.get("Zswapped", 0)
+    return min(used, total), total, orig
+
+
 def read_disk(path: Path) -> tuple[int, int]:
     try:
         usage = shutil.disk_usage(path)
@@ -143,7 +217,7 @@ def read_disk(path: Path) -> tuple[int, int]:
     return usage.used, usage.total
 
 
-def fmt_pair(used: int, total: int) -> str:
+def fmt_pair(used: int, total: int, orig: int | None = None) -> str:
     value = float(max(1, total))
     unit = "B"
     div = 1.0
@@ -154,8 +228,12 @@ def fmt_pair(used: int, total: int) -> str:
         value /= 1024.0
         div *= 1024.0
     if unit == "B":
-        return f"{used} / {total} B"
-    return f"{used / div:.1f} / {total / div:.1f} {unit}"
+        used_s = str(used) if orig is None else f"{used} ({orig})"
+        return f"{used_s} / {total} B"
+    used_s = f"{used / div:.1f}"
+    if orig is not None:
+        used_s = f"{used_s} ({orig / div:.1f})"
+    return f"{used_s} / {total / div:.1f} {unit}"
 
 
 def fmt_freq(mhz: float) -> str:
@@ -176,6 +254,8 @@ class HostMonitor:
         self.cpu_pct: float | None = None
         self.mem_used = 0
         self.mem_total = 0
+        self.zram: tuple[int, int] | None = None
+        self.zswap: tuple[int, int, int] | None = None
         self.disk_used = 0
         self.disk_total = 0
         self._prev_times = read_cpu_times()
@@ -183,6 +263,8 @@ class HostMonitor:
         self._last_fast = now
         self.cpu_mhz = read_cpu_mhz()
         self.mem_used, self.mem_total = read_mem()
+        self.zram = read_zram()
+        self.zswap = read_zswap()
         self.disk_used, self.disk_total = read_disk(self.top)
         self._last_disk = now
 
@@ -192,6 +274,8 @@ class HostMonitor:
             self.cpu_mhz = read_cpu_mhz()
             self._sample_cpu()
             self.mem_used, self.mem_total = read_mem()
+            self.zram = read_zram()
+            self.zswap = read_zswap()
             self._last_fast = now
         if force or force_disk or now - self._last_disk >= DISK_INTERVAL:
             self.disk_used, self.disk_total = read_disk(self.top)
