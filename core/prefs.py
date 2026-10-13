@@ -19,6 +19,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from core.builder import MEM_LIMIT_KINDS
 from ui.i18n import LANGS
 
 TUI_DIR_NAME = ".miku-tui"
@@ -40,6 +41,7 @@ class Prefs:
     voice: str | None = None
     git_transport: str | None = None
     check_jobs: int | None = None
+    mem_limit: str | None = None
 
 
 def tui_dir(top: Path, *, create: bool = False) -> Path:
@@ -71,6 +73,7 @@ def load_prefs(top: Path) -> Prefs:
     voice = raw.get("voice")
     git_transport = raw.get("git_transport")
     check_jobs = raw.get("check_jobs")
+    mem_limit = raw.get("mem_limit")
     return Prefs(
         device=device.strip() if isinstance(device, str) and device.strip() else None,
         variant=variant if variant in _VARIANTS else None,
@@ -82,6 +85,7 @@ def load_prefs(top: Path) -> Prefs:
         voice=voice if voice in _VOICES else None,
         git_transport=git_transport if git_transport in _GIT_TRANSPORTS else None,
         check_jobs=check_jobs if isinstance(check_jobs, int) and not isinstance(check_jobs, bool) and 1 <= check_jobs <= 256 else None,
+        mem_limit=mem_limit if mem_limit in MEM_LIMIT_KINDS else None,
     )
 
 
@@ -107,6 +111,8 @@ def save_prefs(top: Path, prefs: Prefs) -> None:
         data["git_transport"] = prefs.git_transport
     if prefs.check_jobs is not None:
         data["check_jobs"] = max(1, min(256, int(prefs.check_jobs)))
+    if prefs.mem_limit in MEM_LIMIT_KINDS:
+        data["mem_limit"] = prefs.mem_limit
     tui_dir(top, create=True)
     path = prefs_path(top)
     tmp = path.with_name(path.name + ".tmp")

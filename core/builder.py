@@ -42,6 +42,25 @@ TARGET_FASTBOOT = "fastboot"
 TARGET_CUSTOM = "custom"
 TARGET_KINDS = (TARGET_OTA, TARGET_FASTBOOT, TARGET_CUSTOM)
 
+MEM_LIMIT_OFF = "off"
+MEM_LIMIT_STANDARD = "standard"
+MEM_LIMIT_AGGRESSIVE = "aggressive"
+MEM_LIMIT_KINDS = (MEM_LIMIT_OFF, MEM_LIMIT_STANDARD, MEM_LIMIT_AGGRESSIVE)
+MEM_LIMIT_HIGH = {
+    MEM_LIMIT_STANDARD: "80%",
+    MEM_LIMIT_AGGRESSIVE: "60%",
+}
+MEM_LIMIT_UNIT = "miku-tui-build"
+
+
+def memory_high_spec(kind: str) -> str | None:
+    return MEM_LIMIT_HIGH.get(kind)
+
+
+def mem_limit_tag(kind: str) -> str:
+    spec = memory_high_spec(kind)
+    return f"mem{spec}" if spec else ""
+
 _MAKE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.+/-]*$")
 CUSTOM_TARGET_MAX = 128
 
@@ -84,6 +103,7 @@ class BuildConfig:
     keep_going: bool = False
     make_target: str = MAKE_TARGET
     show_sha256: bool = True
+    mem_limit: str = MEM_LIMIT_OFF
 
     @property
     def lunch_combo(self) -> str:
@@ -126,6 +146,9 @@ class BuildSession:
         env = _build_env(self.config)
         script = _build_script(self.top, self.config, markers=not self.inherit_tty)
         argv = ["bash", "-c", script]
+        high = memory_high_spec(self.config.mem_limit)
+        if high:
+            argv = _scope_argv(argv, high)
         self.started_at = time.time()
         if self.inherit_tty:
             self.proc = subprocess.Popen(argv, cwd=self.top, env=env, start_new_session=True)
@@ -208,6 +231,8 @@ class BuildSession:
             except ProcessLookupError:
                 pass
             _wait_exit(self.proc, 1.0)
+        if memory_high_spec(self.config.mem_limit):
+            _stop_mem_scope()
         self._returncode = self.proc.poll()
         if self._returncode is None:
             self._returncode = -signal.SIGKILL
@@ -266,6 +291,37 @@ def run_cli(top: Path, config: BuildConfig) -> int:
     except KeyboardInterrupt:
         session.stop()
         return 130
+
+
+def _scope_argv(inner: list[str], high: str) -> list[str]:
+    run = shutil.which("systemd-run")
+    if not run:
+        raise FileNotFoundError("systemd-run")
+    _stop_mem_scope()
+    return [
+        run,
+        "--user",
+        "--scope",
+        "--collect",
+        "--quiet",
+        f"--unit={MEM_LIMIT_UNIT}",
+        "-p",
+        f"MemoryHigh={high}",
+        "-p",
+        "MemorySwapMax=infinity",
+        "--",
+        *inner,
+    ]
+
+
+def _stop_mem_scope() -> None:
+    systemctl = shutil.which("systemctl")
+    if not systemctl:
+        return
+    unit = f"{MEM_LIMIT_UNIT}.scope"
+    kwargs = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "check": False}
+    subprocess.run([systemctl, "--user", "stop", unit], **kwargs)
+    subprocess.run([systemctl, "--user", "reset-failed", unit], **kwargs)
 
 
 def _build_env(config: BuildConfig) -> dict[str, str]:

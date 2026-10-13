@@ -24,12 +24,17 @@ from pathlib import Path
 
 from core.builder import (
     CUSTOM_TARGET_MAX,
+    MEM_LIMIT_AGGRESSIVE,
+    MEM_LIMIT_KINDS,
+    MEM_LIMIT_OFF,
+    MEM_LIMIT_STANDARD,
     TARGET_CUSTOM,
     TARGET_FASTBOOT,
     TARGET_KINDS,
     TARGET_OTA,
     BuildConfig,
     BuildSession,
+    mem_limit_tag,
     resolve_make_target,
     sanitize_make_targets,
 )
@@ -67,7 +72,18 @@ CLEAN_INSTALL = "installclean"
 CLEAN_FULL = "clean"
 
 VARIANTS = ("user", "userdebug", "eng")
-_FOCUS = ("device", "variant", "target", "jobs", "gapps", "ccache", "keep_going", "clean", "build")
+_FOCUS = (
+    "device",
+    "variant",
+    "target",
+    "jobs",
+    "mem_limit",
+    "gapps",
+    "ccache",
+    "keep_going",
+    "clean",
+    "build",
+)
 _CUSTOM_FOCUS_INPUT = 0
 _CUSTOM_FOCUS_OK = 1
 _STOP_GRACE_S = 0.4
@@ -109,6 +125,7 @@ class BuildPage(Page):
             self.jobs = prefs.jobs
         else:
             self.jobs = max(1, os.cpu_count() or 4)
+        self.mem_limit = prefs.mem_limit if prefs.mem_limit in MEM_LIMIT_KINDS else MEM_LIMIT_OFF
         if gapps is not None:
             self.gapps = gapps
         elif prefs.gapps is not None:
@@ -298,6 +315,22 @@ class BuildPage(Page):
                 focused=self.has_focus("jobs"),
             )
             row += 2
+        row = option_block(
+            stdscr,
+            hits,
+            row,
+            xx,
+            inner,
+            limit,
+            ctx.t("mem_limit"),
+            (
+                (MEM_LIMIT_OFF, ctx.t("mem_limit_off")),
+                (MEM_LIMIT_STANDARD, ctx.t("mem_limit_standard")),
+                (MEM_LIMIT_AGGRESSIVE, ctx.t("mem_limit_aggressive")),
+            ),
+            self.mem_limit,
+            "mem_limit",
+        )
         yn = yes_no(ctx.t)
         row = option_block(stdscr, hits, row, xx, inner, limit, ctx.t("gapps"), yn, self.gapps, "gapps")
         row = option_block(stdscr, hits, row, xx, inner, limit, ctx.t("ccache"), yn, self.ccache, "ccache")
@@ -410,7 +443,9 @@ class BuildPage(Page):
     def _draw_build(self, ctx, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         session = self.session
         if session is not None:
-            combo = f"{session.config.lunch_combo}  make {session.config.make_target}  -j{session.config.jobs}"
+            extra = mem_limit_tag(session.config.mem_limit)
+            extra = f"  {extra}" if extra else ""
+            combo = f"{session.config.lunch_combo}  make {session.config.make_target}  -j{session.config.jobs}{extra}"
         else:
             combo = self.combo_preview()
         elapsed = ""
@@ -497,6 +532,9 @@ class BuildPage(Page):
             extras.append("-k 0")
         if self.clean != CLEAN_NONE:
             extras.append(self.clean)
+        tag = mem_limit_tag(self.mem_limit)
+        if tag:
+            extras.append(tag)
         extra = ("  " + " ".join(extras)) if extras else ""
         return f"{name}-{self.release}-{self.variant}  make {self._make_target()}  -j{self.jobs}{extra}"
 
@@ -567,6 +605,8 @@ class BuildPage(Page):
             elif ord("0") <= ch <= ord("9"):
                 value = self.jobs * 10 + (ch - ord("0"))
                 self.jobs = min(256, value)
+        elif name == "mem_limit":
+            self.mem_limit = _cycle(MEM_LIMIT_KINDS, self.mem_limit, ch)
         elif name == "gapps":
             self.gapps = _cycle((True, False), self.gapps, ch)
         elif name == "ccache":
@@ -663,6 +703,11 @@ class BuildPage(Page):
             self.set_focus("jobs")
             delta = int(payload or 0)
             self.jobs = min(256, max(1, self.jobs + delta))
+            return True
+        if action == "mem_limit":
+            self.set_focus("mem_limit")
+            if isinstance(payload, str) and payload in MEM_LIMIT_KINDS:
+                self.mem_limit = payload
             return True
         if action == "focus" and isinstance(payload, str) and payload in _FOCUS:
             self.set_focus(payload)
@@ -877,6 +922,7 @@ class BuildPage(Page):
             variant=self.variant,
             make_target=make_target,
             show_sha256=self.target_kind == TARGET_OTA,
+            mem_limit=self.mem_limit,
         )
 
         def on_data(text: str, buf: LogBuffer = log, tracker: PhaseTracker = phase) -> None:
@@ -886,7 +932,12 @@ class BuildPage(Page):
         session = BuildSession(self.top, config, on_data=on_data)
         self.session = session
         self.mode = MODE_BUILD
-        session.start()
+        try:
+            session.start()
+        except FileNotFoundError:
+            self.session = None
+            self.mode = MODE_CONFIG
+            self.set_status("mem_limit_no_systemd")
         rows, cols = ctx.stdscr.getmaxyx() if ctx.stdscr is not None else (24, 80)
         _left, _gap, _cy, _cx, ch, cw = _panel_geom(rows, cols)
         session.set_winsize(max(8, ch - 8), max(20, cw - 4))
