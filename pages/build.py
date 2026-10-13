@@ -59,6 +59,7 @@ from ui.term import (
     dw,
 )
 from ui.ctx import Page
+from ui.dialog import Dialog, paint_dialog
 from ui.widgets import box_btn, fill_btn, jobs_row, option_block, text_field, yes_no
 
 MODE_CONFIG = "config"
@@ -142,6 +143,8 @@ class BuildPage(Page):
         self.target_kind = TARGET_OTA
         self.custom_target = ""
         self.custom_dialog: CustomTargetDialog | None = None
+        self.dialog: Dialog | None = None
+        self._mem_limit_pending: str | None = None
         self.clean = clean
         self.selected: Product | None = None
         if prefs.device:
@@ -172,12 +175,17 @@ class BuildPage(Page):
         self.status_args: dict[str, object] = {}
 
     def overlay(self) -> bool:
-        return self.custom_dialog is not None
+        return self.custom_dialog is not None or self.dialog is not None
 
     def draw_overlay(self, ctx, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        if self.dialog is not None:
+            paint_dialog(ctx, stdscr, y, x, h, w, self.dialog)
+            return
         self._draw_custom_dialog(ctx, stdscr, y, x, h, w)
 
     def key_overlay(self, ctx, ch: int) -> bool:
+        if self.dialog is not None:
+            return self._key_mem_limit_dialog(ctx, ch)
         return self._key_custom_dialog(ctx, ch)
 
     def has_focus(self, name: str) -> bool:
@@ -224,6 +232,9 @@ class BuildPage(Page):
             self._stopping = None
 
     def close(self) -> bool:
+        if self.dialog is not None:
+            self._cancel_mem_limit()
+            return True
         if self.custom_dialog is not None:
             self.custom_dialog = None
             return True
@@ -328,7 +339,7 @@ class BuildPage(Page):
                 (MEM_LIMIT_STANDARD, ctx.t("mem_limit_standard")),
                 (MEM_LIMIT_AGGRESSIVE, ctx.t("mem_limit_aggressive")),
             ),
-            self.mem_limit,
+            self._shown_mem_limit(),
             "mem_limit",
         )
         yn = yes_no(ctx.t)
@@ -532,7 +543,7 @@ class BuildPage(Page):
             extras.append("-k 0")
         if self.clean != CLEAN_NONE:
             extras.append(self.clean)
-        tag = mem_limit_tag(self.mem_limit)
+        tag = mem_limit_tag(self._shown_mem_limit())
         if tag:
             extras.append(tag)
         extra = ("  " + " ".join(extras)) if extras else ""
@@ -540,6 +551,63 @@ class BuildPage(Page):
 
     def _make_target(self) -> str:
         return resolve_make_target(self.target_kind, self.custom_target)
+
+    def _shown_mem_limit(self) -> str:
+        if self.dialog is not None and self._mem_limit_pending in MEM_LIMIT_KINDS:
+            return self._mem_limit_pending
+        return self.mem_limit
+
+    def _choose_mem_limit(self, value: str) -> None:
+        if value not in MEM_LIMIT_KINDS:
+            return
+        if value == MEM_LIMIT_OFF or value == self.mem_limit or self.mem_limit != MEM_LIMIT_OFF:
+            self.mem_limit = value
+            self._mem_limit_pending = None
+            self.dialog = None
+            return
+        self._open_mem_limit_dialog(value)
+
+    def _open_mem_limit_dialog(self, value: str) -> None:
+        self._mem_limit_pending = value
+        self.dialog = Dialog(
+            title_key="scm_sync_warn_title",
+            body_key="mem_limit_warn_body",
+            choices=(
+                ("mem_limit_ok", "mem_limit_warn_ok"),
+                ("cancel", "cancel"),
+            ),
+            kind="mem_limit",
+            danger_payloads=("mem_limit_ok",),
+        )
+
+    def _confirm_mem_limit(self) -> None:
+        if self._mem_limit_pending in MEM_LIMIT_KINDS:
+            self.mem_limit = self._mem_limit_pending
+        self._mem_limit_pending = None
+        self.dialog = None
+
+    def _cancel_mem_limit(self) -> None:
+        self.mem_limit = MEM_LIMIT_OFF
+        self._mem_limit_pending = None
+        self.dialog = None
+
+    def _key_mem_limit_dialog(self, ctx, ch: int) -> bool:
+        dlg = self.dialog
+        if dlg is None:
+            return False
+        if ch in (ord("q"), ord("Q")):
+            ctx.action("dialog", "cancel")
+            return ctx.leave
+        n = len(dlg.choices)
+        if n == 0:
+            return False
+        if ch in (curses.KEY_UP,):
+            dlg.focus = (dlg.focus - 1) % n
+        elif ch in (curses.KEY_DOWN, 9):
+            dlg.focus = (dlg.focus + 1) % n
+        elif ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
+            ctx.action("dialog", dlg.choices[dlg.focus][0])
+        return False
 
     def _target_options(self, ctx) -> tuple[tuple[object, str], ...]:
         custom = self.custom_target if self.custom_target else ctx.t("target_custom")
@@ -606,7 +674,8 @@ class BuildPage(Page):
                 value = self.jobs * 10 + (ch - ord("0"))
                 self.jobs = min(256, value)
         elif name == "mem_limit":
-            self.mem_limit = _cycle(MEM_LIMIT_KINDS, self.mem_limit, ch)
+            nxt = _cycle(MEM_LIMIT_KINDS, self._shown_mem_limit(), ch)
+            self._choose_mem_limit(nxt)
         elif name == "gapps":
             self.gapps = _cycle((True, False), self.gapps, ch)
         elif name == "ccache":
@@ -707,7 +776,13 @@ class BuildPage(Page):
         if action == "mem_limit":
             self.set_focus("mem_limit")
             if isinstance(payload, str) and payload in MEM_LIMIT_KINDS:
-                self.mem_limit = payload
+                self._choose_mem_limit(payload)
+            return True
+        if action == "dialog" and isinstance(payload, str):
+            if payload == "mem_limit_ok":
+                self._confirm_mem_limit()
+            elif payload == "cancel":
+                self._cancel_mem_limit()
             return True
         if action == "focus" and isinstance(payload, str) and payload in _FOCUS:
             self.set_focus(payload)

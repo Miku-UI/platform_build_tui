@@ -425,7 +425,9 @@ class BuildTui:
             cx += tw + 1
 
     def _close_page(self) -> None:
+        before = self._prefs_snapshot()
         if self.current_page().close():
+            self._persist_if_changed(before)
             return
         if self.tab != TAB_BUILD:
             self.tab = TAB_BUILD
