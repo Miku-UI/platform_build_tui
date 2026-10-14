@@ -670,9 +670,6 @@ class ScmPage(Page):
         dlg = self.dialog
         if dlg is None:
             return False
-        if ch in (ord("q"), ord("Q")):
-            ctx.action("dialog", "cancel")
-            return ctx.leave
         if dlg.kind == "settings":
             return self._key_settings_dialog(ctx, ch)
         n = len(dlg.choices)

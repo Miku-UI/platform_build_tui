@@ -526,9 +526,6 @@ class BuildTui:
         return page.key(ctx, ch)
 
     def _key_other_tab(self, ctx: Ctx, ch: int) -> bool:
-        if ch in (ord("q"), ord("Q")):
-            self._action("quit")
-            return self._leave
         if self.current_page().key(ctx, ch):
             return False
         if ch in (curses.KEY_LEFT, curses.KEY_RIGHT):

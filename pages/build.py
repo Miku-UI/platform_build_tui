@@ -592,9 +592,6 @@ class BuildPage(Page):
         dlg = self.dialog
         if dlg is None:
             return False
-        if ch in (ord("q"), ord("Q")):
-            ctx.action("dialog", "cancel")
-            return ctx.leave
         n = len(dlg.choices)
         if n == 0:
             return False
@@ -636,9 +633,6 @@ class BuildPage(Page):
         return self._key_config(ctx, ch)
 
     def _key_config(self, ctx, ch: int) -> bool:
-        if ch in (ord("q"), ord("Q")):
-            ctx.action("quit")
-            return ctx.leave
         if ch in (9, curses.KEY_DOWN):
             self.focus = (self.focus + 1) % len(_FOCUS)
             return False
@@ -687,9 +681,6 @@ class BuildPage(Page):
         return False
 
     def _key_picker(self, ctx, ch: int) -> bool:
-        if ch in (ord("q"), ord("Q")):
-            self.mode = MODE_CONFIG
-            return False
         if ch in (curses.KEY_UP,):
             self.picker_index = max(0, self.picker_index - 1)
         elif ch in (curses.KEY_DOWN,):
@@ -717,8 +708,6 @@ class BuildPage(Page):
             if self._in_start_grace():
                 return False
             ctx.action("stop_or_back")
-        elif ch in (ord("q"), ord("Q")) and self.mode == MODE_DONE:
-            ctx.action("stop_or_back")
         return False
 
     def _key_result(self, ctx, ch: int) -> bool:
@@ -734,7 +723,7 @@ class BuildPage(Page):
             self.result_scroll = 0
         elif ch in (curses.KEY_END,):
             self.result_scroll = max(0, self._result_n)
-        elif ch in (curses.KEY_ENTER, 10, 13, ord(" "), ord("q"), ord("Q")):
+        elif ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
             ctx.action("stop_or_back")
         return False
 
@@ -911,9 +900,6 @@ class BuildPage(Page):
         dlg = self.custom_dialog
         if dlg is None:
             return False
-        if ch in (ord("q"), ord("Q")) and dlg.focus == _CUSTOM_FOCUS_OK:
-            ctx.action("target_custom_cancel")
-            return ctx.leave
         if ch in (9, curses.KEY_DOWN):
             dlg.focus = _CUSTOM_FOCUS_OK
             return False
