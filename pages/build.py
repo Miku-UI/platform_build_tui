@@ -50,7 +50,6 @@ from ui.term import (
     Rect,
     _WHEEL_UP,
     _add,
-    _add_segs,
     _cycle,
     _fmt_elapsed,
     _panel_geom,
@@ -201,7 +200,7 @@ class BuildPage(Page):
         return self.mode == MODE_BUILD
 
     def showing_log(self) -> bool:
-        return self.mode in (MODE_BUILD, MODE_DONE)
+        return self.mode in (MODE_BUILD, MODE_DONE, MODE_RESULT)
 
     def consume_interrupt(self) -> bool:
         if self.mode == MODE_BUILD:
@@ -516,9 +515,7 @@ class BuildPage(Page):
         self._result_n = len(rows)
         max_off = max(0, len(rows) - body_h)
         self.result_scroll = min(max(0, self.result_scroll), max_off)
-        view = rows[self.result_scroll : self.result_scroll + body_h]
-        for i, segs in enumerate(view):
-            _add_segs(stdscr, body_top + i, xx, segs, inner)
+        ctx.draw_seg_rows(stdscr, body_top, xx, body_h, inner, rows, self.result_scroll)
         btn = ctx.t("back")
         btn_w = min(inner, max(16, dw(btn) + 10))
         btn_x = x + max(0, (w - btn_w) // 2)
@@ -825,6 +822,7 @@ class BuildPage(Page):
                 self._stop_build()
             elif self.mode == MODE_RESULT:
                 self.mode = MODE_DONE
+                ctx.clear_pointer_state()
             elif self.mode == MODE_DONE:
                 self.mode = MODE_CONFIG
             return True
@@ -1055,5 +1053,5 @@ class BuildPage(Page):
         )
         self.report = report
         self.result_scroll = 0
-        ctx.clear_scroll_drag()
+        ctx.clear_pointer_state()
         self.mode = MODE_RESULT

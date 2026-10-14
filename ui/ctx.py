@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import curses
 
+from ui.input import draw_seg_rows as _draw_seg_rows
 from ui.logbuf import LogBuffer
 from ui.term import Hit, Rect
 
@@ -99,6 +100,18 @@ class Ctx:
 
     def draw_log_scrollbar(self, stdscr: curses.window, y: int, x: int, h: int) -> None:
         self._sh._draw_log_scrollbar(stdscr, y, x, h)
+
+    def draw_seg_rows(
+        self,
+        stdscr: curses.window,
+        y: int,
+        x: int,
+        h: int,
+        w: int,
+        rows: list[list[tuple[str, int]]],
+        start: int,
+    ) -> None:
+        _draw_seg_rows(self._sh, stdscr, y, x, h, w, rows, start)
 
     @property
     def log_geom(self) -> Rect:

@@ -147,15 +147,33 @@ def draw_log(
         setattr(owner, scroll_attr, scroll)
         start = max(0, len(wrapped) - h - scroll)
     app._view_start = start
-    view = wrapped[start : start + h]
+    paint_wrapped(app, stdscr, y, x, h, w)
+
+
+def segs_to_cells(segs: list[tuple[str, int]]) -> list[Cell]:
+    return [Cell(ch, attr=attr) for text, attr in segs for ch in text]
+
+
+def paint_wrapped(
+    app,
+    stdscr: curses.window,
+    y: int,
+    x: int,
+    h: int,
+    w: int,
+) -> None:
+    start = app._view_start
+    wrapped = app._wrapped
     sel = sel_range(app)
-    for i in range(h):
-        row = view[i] if i < len(view) else []
+    for i in range(max(0, h)):
         abs_row = start + i
+        row = wrapped[abs_row] if 0 <= abs_row < len(wrapped) else []
         col = 0
         for cell in row:
             cw = dw(cell.ch) or 1
-            attr = _cell_attr(cell)
+            if col >= w:
+                break
+            attr = cell.attr if cell.attr is not None else _cell_attr(cell)
             if sel and col_selected(sel, abs_row, col, cw):
                 attr |= curses.A_REVERSE
             _add(stdscr, y + i, x + col, cell.ch, attr, cw)
@@ -165,6 +183,26 @@ def draw_log(
             if sel and col_selected(sel, abs_row, col, w - col):
                 fill_attr |= curses.A_REVERSE
                 _add(stdscr, y + i, x + col, " " * (w - col), fill_attr, w - col)
+
+
+def draw_seg_rows(
+    app,
+    stdscr: curses.window,
+    y: int,
+    x: int,
+    h: int,
+    w: int,
+    rows: list[list[tuple[str, int]]],
+    start: int,
+) -> None:
+    app._wrapped = [segs_to_cells(segs) for segs in rows]
+    app._wrap_key = None
+    if h <= 0 or w <= 0:
+        app._view_start = 0
+        return
+    max_off = max(0, len(app._wrapped) - h)
+    app._view_start = min(max(0, start), max_off)
+    paint_wrapped(app, stdscr, y, x, h, w)
 
 
 def draw_log_scrollbar(app, stdscr: curses.window, y: int, x: int, h: int) -> None:

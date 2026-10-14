@@ -28,6 +28,7 @@ class Cell:
     bold: bool = False
     dim: bool = False
     underline: bool = False
+    attr: int | None = None
 
 
 class LogBuffer:
