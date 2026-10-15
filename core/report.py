@@ -269,11 +269,21 @@ def save_stats(out_dir: Path, stats: dict[str, int]) -> None:
             pass
 
 
-def find_artifact(out_dir: Path, hinted: str | None, started: float) -> Path | None:
+def find_artifact(
+    out_dir: Path, hinted: str | None, started: float, *, systemimage: bool = False
+) -> Path | None:
     if hinted:
         cand = Path(hinted)
         if cand.is_file():
             return cand
+    if systemimage:
+        cand = out_dir / "system.img"
+        try:
+            if cand.is_file() and cand.stat().st_mtime >= started:
+                return cand
+        except OSError:
+            pass
+        return None
     newest: Path | None = None
     newest_mtime = started - 1
     try:
@@ -466,6 +476,7 @@ def build_report(
     log_rows: list[list[Glyph]],
     gapps: bool,
     show_sha256: bool = True,
+    systemimage: bool = False,
 ) -> BuildReport:
     finished = max(finished, started)
     out_dir = product_out(top, product)
@@ -488,7 +499,9 @@ def build_report(
     signed: bool | None = None
     key_rel = None
     if ok:
-        artifact_abs = find_artifact(out_dir, package_hint, started)
+        artifact_abs = find_artifact(
+            out_dir, package_hint, started, systemimage=systemimage
+        )
         if artifact_abs is not None:
             artifact_rel = relpath(artifact_abs, top)
             try:

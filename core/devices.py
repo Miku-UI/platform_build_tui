@@ -37,6 +37,10 @@ class Product:
     def label(self) -> str:
         return f"{self.product_model}-({self.product_name})"
 
+    @property
+    def is_gsi(self) -> bool:
+        return self.product_name.startswith("miku_gsi")
+
 
 def android_top_from(start: Path) -> Path:
     here = start.resolve()

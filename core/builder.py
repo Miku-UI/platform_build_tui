@@ -35,12 +35,14 @@ from core.devices import Product
 from core.phase import MARKER_PREFIX
 
 MAKE_TARGET = "diva"
+GSI_TARGET = "systemimage"
 FASTBOOT_TARGET = "updatepackage"
 
 TARGET_OTA = "ota"
 TARGET_FASTBOOT = "fastboot"
 TARGET_CUSTOM = "custom"
 TARGET_KINDS = (TARGET_OTA, TARGET_FASTBOOT, TARGET_CUSTOM)
+TARGET_GSI_KINDS = (TARGET_OTA, TARGET_CUSTOM)
 
 MEM_LIMIT_OFF = "off"
 MEM_LIMIT_STANDARD = "standard"
@@ -76,14 +78,26 @@ def sanitize_make_targets(raw: str) -> str:
     return " ".join(tokens)
 
 
-def resolve_make_target(kind: str, custom: str) -> str:
+def default_make_target(product: Product | None = None) -> str:
+    if product is not None and product.is_gsi:
+        return GSI_TARGET
+    return MAKE_TARGET
+
+
+def target_kinds_for(product: Product | None) -> tuple[str, ...]:
+    if product is not None and product.is_gsi:
+        return TARGET_GSI_KINDS
+    return TARGET_KINDS
+
+
+def resolve_make_target(kind: str, custom: str, product: Product | None = None) -> str:
     if kind == TARGET_FASTBOOT:
         return FASTBOOT_TARGET
     if kind == TARGET_CUSTOM:
         cleaned = sanitize_make_targets(custom)
         if cleaned:
             return cleaned
-    return MAKE_TARGET
+    return default_make_target(product)
 
 
 def quote_make_target(raw: str) -> str:

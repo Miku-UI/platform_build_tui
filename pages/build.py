@@ -24,19 +24,19 @@ from pathlib import Path
 
 from core.builder import (
     CUSTOM_TARGET_MAX,
+    GSI_TARGET,
     MEM_LIMIT_AGGRESSIVE,
     MEM_LIMIT_KINDS,
     MEM_LIMIT_OFF,
     MEM_LIMIT_STANDARD,
     TARGET_CUSTOM,
-    TARGET_FASTBOOT,
-    TARGET_KINDS,
     TARGET_OTA,
     BuildConfig,
     BuildSession,
     mem_limit_tag,
     resolve_make_target,
     sanitize_make_targets,
+    target_kinds_for,
 )
 from core.devices import Product, resolve_device
 from ui.logbuf import LogBuffer
@@ -259,6 +259,7 @@ class BuildPage(Page):
             self._draw_config(ctx, stdscr, y, x, h, w)
 
     def _draw_config(self, ctx, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        self._clamp_target_kind()
         _rounded_frame(stdscr, y, x, h, w, curses.color_pair(12), "✦  Cinderella")
         inner = max(10, w - 4)
         xx = x + 2
@@ -547,7 +548,7 @@ class BuildPage(Page):
         return f"{name}-{self.release}-{self.variant}  make {self._make_target()}  -j{self.jobs}{extra}"
 
     def _make_target(self) -> str:
-        return resolve_make_target(self.target_kind, self.custom_target)
+        return resolve_make_target(self.target_kind, self.custom_target, self.selected)
 
     def _shown_mem_limit(self) -> str:
         if self.dialog is not None and self._mem_limit_pending in MEM_LIMIT_KINDS:
@@ -603,13 +604,26 @@ class BuildPage(Page):
             ctx.action("dialog", dlg.choices[dlg.focus][0])
         return False
 
+    def _target_kinds(self) -> tuple[str, ...]:
+        return target_kinds_for(self.selected)
+
+    def _clamp_target_kind(self) -> None:
+        if self.target_kind not in self._target_kinds():
+            self.target_kind = TARGET_OTA
+
     def _target_options(self, ctx) -> tuple[tuple[object, str], ...]:
         custom = self.custom_target if self.custom_target else ctx.t("target_custom")
-        return (
-            (TARGET_OTA, ctx.t("target_ota")),
-            (TARGET_FASTBOOT, ctx.t("target_fastboot")),
-            (TARGET_CUSTOM, custom),
-        )
+        gsi = self.selected is not None and self.selected.is_gsi
+        options: list[tuple[object, str]] = []
+        for kind in self._target_kinds():
+            if kind == TARGET_OTA:
+                label = ctx.t("target_gsi") if gsi else ctx.t("target_ota")
+            elif kind == TARGET_CUSTOM:
+                label = custom
+            else:
+                label = ctx.t("target_fastboot")
+            options.append((kind, label))
+        return tuple(options)
 
     def wheel(self, ctx, delta: int) -> None:
         if self.mode == MODE_PICKER:
@@ -646,13 +660,14 @@ class BuildPage(Page):
         elif name == "variant":
             self.variant = _cycle(VARIANTS, self.variant, ch)
         elif name == "target":
+            kinds = self._target_kinds()
             if self.target_kind == TARGET_CUSTOM and ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
                 self._open_custom_dialog()
             else:
-                nxt = _cycle(TARGET_KINDS, self.target_kind, ch)
+                nxt = _cycle(kinds, self.target_kind, ch)
                 if nxt == TARGET_CUSTOM:
                     self._open_custom_dialog()
-                elif nxt in TARGET_KINDS:
+                elif nxt in kinds:
                     self.target_kind = nxt
         elif name == "jobs":
             if ch in (curses.KEY_LEFT, ord("-")):
@@ -739,9 +754,10 @@ class BuildPage(Page):
             return True
         if action == "target":
             self.set_focus("target")
+            kinds = self._target_kinds()
             if payload == TARGET_CUSTOM:
                 self._open_custom_dialog()
-            elif payload in TARGET_KINDS:
+            elif payload in kinds:
                 self.target_kind = payload
             return True
         if action == "target_custom_input":
@@ -801,6 +817,7 @@ class BuildPage(Page):
             if 0 <= payload < len(self.products):
                 self.selected = self.products[payload]
                 self.picker_index = payload
+                self._clamp_target_kind()
             self.mode = MODE_CONFIG
             self.set_status()
             return True
@@ -957,6 +974,7 @@ class BuildPage(Page):
         if self._stopping is not None and self._stopping.running:
             self.set_status("stopping")
             return
+        self._clamp_target_kind()
         if self.target_kind == TARGET_CUSTOM and not sanitize_make_targets(self.custom_target):
             self._open_custom_dialog()
             return
@@ -980,7 +998,7 @@ class BuildPage(Page):
             release=self.release,
             variant=self.variant,
             make_target=make_target,
-            show_sha256=self.target_kind == TARGET_OTA,
+            show_sha256=self.target_kind == TARGET_OTA and not self.selected.is_gsi,
             mem_limit=self.mem_limit,
         )
 
@@ -1036,6 +1054,7 @@ class BuildPage(Page):
             log_rows=self.log.glyph_rows(),
             gapps=session.config.gapps,
             show_sha256=session.config.show_sha256,
+            systemimage=session.config.make_target == GSI_TARGET,
         )
         self.report = report
         self.result_scroll = 0
