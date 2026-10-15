@@ -226,15 +226,17 @@ def is_aosp_testkey(cert: str) -> bool:
     return bool(_AOSP_TESTKEY.search(n.rstrip("/")))
 
 
-def read_certificate(out_dir: Path) -> str:
-    info = out_dir / "misc_info.txt"
+def read_certificate(top: Path, product_name: str) -> str:
+    path = top / "out" / "soong" / f"soong.{product_name}.variables"
     try:
-        text = info.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return ""
-    for raw in text.splitlines():
-        if raw.startswith("default_system_dev_certificate="):
-            return raw.split("=", 1)[1].strip()
+    if not isinstance(raw, dict):
+        return ""
+    val = raw.get("DefaultSystemDevCertificate")
+    if isinstance(val, str) and val.strip():
+        return val.strip()
     return ""
 
 
@@ -512,7 +514,7 @@ def build_report(
                 size_delta = artifact_size - prev["size_bytes"]
         if show_sha256:
             sha256 = read_sha256sum(artifact_abs) if artifact_abs is not None else None
-        cert = read_certificate(out_dir)
+        cert = read_certificate(top, product.product_name)
         if cert:
             signed = not is_aosp_testkey(cert)
             if signed:
