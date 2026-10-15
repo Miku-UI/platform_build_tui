@@ -33,6 +33,10 @@ _PACK_NEEDLES = (
     "Build ota from target files",
     "Package Complete",
 )
+_COUNT_NEEDLES = (
+    "Package OTA",
+    "Target system fs image",
+)
 
 _RANK = {
     "phase_setup": 0,
@@ -161,7 +165,7 @@ class PhaseTracker:
             except ValueError:
                 done = 0
                 total = 0
-            if "Package OTA" in line and _RANK[self.key] >= _RANK["phase_ninja"]:
+            if any(n in line for n in _COUNT_NEEDLES) and _RANK[self.key] >= _RANK["phase_ninja"]:
                 if total > 0:
                     self.ninja_total = total
                 self.ninja_done = done
