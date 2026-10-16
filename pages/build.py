@@ -1115,8 +1115,9 @@ class BuildPage(Page):
         del_l = f" {ctx.t('env_del')} "
         done_l = f" {ctx.t('env_done')} "
         err = ctx.t(dlg.error) if dlg.error else ""
-        box_w = min(w - 2, max(42, w - 6))
-        box_h = min(h - 2, max(10, h - 4))
+        rows = len(self.env_vars) + 1
+        box_w = min(w - 2, max(42, dw(title) + 8))
+        box_h = min(h - 2, max(10, 6 + min(8, rows) + (1 if err else 0)))
         by = y + max(1, (h - box_h) // 2)
         bx = x + max(1, (w - box_w) // 2)
         fill_a = curses.color_pair(7)

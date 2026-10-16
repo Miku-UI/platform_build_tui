@@ -138,6 +138,7 @@ class BuildTui:
         self.host = HostMonitor(top)
         self._scroll_owner = self.build
         self._scroll_attr = "log_scroll"
+        self._overlay_open = False
 
     def make_ctx(self) -> Ctx:
         return Ctx(self)
@@ -273,12 +274,17 @@ class BuildTui:
             curses.curs_set(0)
         except curses.error:
             pass
+        page = self.current_page()
+        overlay = page.overlay()
         if _sync_curses_size(stdscr):
             stdscr.clear()
             _enable_mouse()
             cancel_press(self)
+        elif self._overlay_open and not overlay:
+            stdscr.clear()
         else:
             stdscr.erase()
+        self._overlay_open = overlay
         self.hits = []
         self._scroll_geom = Rect(0, 0, 0, 0)
         self._log_geom = Rect(0, 0, 0, 0)
@@ -293,11 +299,10 @@ class BuildTui:
         self.host.tick()
         self._draw_banner(stdscr, rows, left)
         ctx = self.make_ctx()
-        page = self.current_page()
         page.draw(ctx, stdscr, cy, cx, ch, cw)
         self._draw_tab_bar(stdscr, cy, cx, cw)
         self._draw_card_chrome(stdscr, cy, cx, cw)
-        if page.overlay():
+        if overlay:
             keep = [hit for hit in self.hits if hit.action in ("tab", "minimize", "quit")]
             self.hits = keep
             page.draw_overlay(ctx, stdscr, cy, cx, ch, cw)
