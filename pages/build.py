@@ -72,17 +72,18 @@ CLEAN_INSTALL = "installclean"
 CLEAN_FULL = "clean"
 
 VARIANTS = ("user", "userdebug", "eng")
-_FOCUS = (
+_FOCUS_OUTER = (
     "device",
     "variant",
     "target",
+    "gapps",
+    "clean",
+)
+_FOCUS_INNER = (
     "jobs",
     "mem_limit",
-    "gapps",
     "ccache",
     "keep_going",
-    "clean",
-    "build",
 )
 _CUSTOM_FOCUS_INPUT = 0
 _CUSTOM_FOCUS_OK = 1
@@ -155,6 +156,7 @@ class BuildPage(Page):
             self.selected = products[0]
         self.mode = MODE_CONFIG
         self.focus = 0
+        self.advanced_open = False
         self.picker_index = 0
         if self.selected is not None:
             try:
@@ -187,12 +189,17 @@ class BuildPage(Page):
             return self._key_mem_limit_dialog(ctx, ch)
         return self._key_custom_dialog(ctx, ch)
 
+    def _focus_names(self) -> tuple[str, ...]:
+        extra = _FOCUS_INNER if self.advanced_open else ()
+        return _FOCUS_OUTER + extra + ("build",)
+
     def has_focus(self, name: str) -> bool:
-        return 0 <= self.focus < len(_FOCUS) and _FOCUS[self.focus] == name
+        names = self._focus_names()
+        return 0 <= self.focus < len(names) and names[self.focus] == name
 
     def set_focus(self, name: str) -> None:
         try:
-            self.focus = _FOCUS.index(name)
+            self.focus = self._focus_names().index(name)
         except ValueError:
             return
 
@@ -310,54 +317,9 @@ class BuildPage(Page):
             shown_kind,
             "target",
         )
-        if row < limit:
-            _add(stdscr, row, xx, ctx.t("jobs"), curses.color_pair(15) | curses.A_DIM, inner)
-            row += 1
-        if row < limit:
-            jobs_row(
-                stdscr,
-                hits,
-                row,
-                xx,
-                inner,
-                self.jobs,
-                "jobs",
-                "jobs",
-                focused=self.has_focus("jobs"),
-            )
-            row += 2
-        row = option_block(
-            stdscr,
-            hits,
-            row,
-            xx,
-            inner,
-            limit,
-            ctx.t("mem_limit"),
-            (
-                (MEM_LIMIT_OFF, ctx.t("mem_limit_off")),
-                (MEM_LIMIT_STANDARD, ctx.t("mem_limit_standard")),
-                (MEM_LIMIT_AGGRESSIVE, ctx.t("mem_limit_aggressive")),
-            ),
-            self._shown_mem_limit(),
-            "mem_limit",
-        )
         yn = yes_no(ctx.t)
         row = option_block(stdscr, hits, row, xx, inner, limit, ctx.t("gapps"), yn, self.gapps, "gapps")
-        row = option_block(stdscr, hits, row, xx, inner, limit, ctx.t("ccache"), yn, self.ccache, "ccache")
         row = option_block(
-            stdscr,
-            hits,
-            row,
-            xx,
-            inner,
-            limit,
-            ctx.t("keep_going"),
-            yn,
-            self.keep_going,
-            "keep_going",
-        )
-        option_block(
             stdscr,
             hits,
             row,
@@ -372,8 +334,60 @@ class BuildPage(Page):
             ),
             self.clean,
             "clean",
-            gap=0,
         )
+        if row < limit:
+            mark = "▾" if self.advanced_open else "▸"
+            text = f"{mark}  {ctx.t('advanced')}"
+            _add(stdscr, row, xx, clip(text, inner), curses.color_pair(15) | curses.A_DIM, inner)
+            hits.append(Hit(Rect(row, xx, 1, inner), "advanced"))
+            row += 1
+        if self.advanced_open:
+            if row < limit:
+                _add(stdscr, row, xx, ctx.t("jobs"), curses.color_pair(15) | curses.A_DIM, inner)
+                row += 1
+            if row < limit:
+                jobs_row(
+                    stdscr,
+                    hits,
+                    row,
+                    xx,
+                    inner,
+                    self.jobs,
+                    "jobs",
+                    "jobs",
+                    focused=self.has_focus("jobs"),
+                )
+                row += 2
+            row = option_block(
+                stdscr,
+                hits,
+                row,
+                xx,
+                inner,
+                limit,
+                ctx.t("mem_limit"),
+                (
+                    (MEM_LIMIT_OFF, ctx.t("mem_limit_off")),
+                    (MEM_LIMIT_STANDARD, ctx.t("mem_limit_standard")),
+                    (MEM_LIMIT_AGGRESSIVE, ctx.t("mem_limit_aggressive")),
+                ),
+                self._shown_mem_limit(),
+                "mem_limit",
+            )
+            row = option_block(stdscr, hits, row, xx, inner, limit, ctx.t("ccache"), yn, self.ccache, "ccache")
+            option_block(
+                stdscr,
+                hits,
+                row,
+                xx,
+                inner,
+                limit,
+                ctx.t("keep_going"),
+                yn,
+                self.keep_going,
+                "keep_going",
+                gap=0,
+            )
         if self.status_key:
             _add(
                 stdscr,
@@ -647,14 +661,15 @@ class BuildPage(Page):
         return self._key_config(ctx, ch)
 
     def _key_config(self, ctx, ch: int) -> bool:
+        names = self._focus_names()
         if ch in (9, curses.KEY_DOWN):
-            self.focus = (self.focus + 1) % len(_FOCUS)
+            self.focus = (self.focus + 1) % len(names)
             return False
         if ch in (getattr(curses, "KEY_BTAB", 353), curses.KEY_UP):
-            self.focus = (self.focus - 1) % len(_FOCUS)
+            self.focus = (self.focus - 1) % len(names)
             return False
         before = ctx.snapshot()
-        name = _FOCUS[self.focus]
+        name = names[self.focus]
         if name == "device" and ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
             self._open_picker()
         elif name == "variant":
@@ -786,8 +801,16 @@ class BuildPage(Page):
             elif payload == "cancel":
                 self._cancel_mem_limit()
             return True
-        if action == "focus" and isinstance(payload, str) and payload in _FOCUS:
+        if action == "focus" and isinstance(payload, str) and payload in self._focus_names():
             self.set_focus(payload)
+            return True
+        if action == "advanced":
+            names = self._focus_names()
+            current = names[self.focus] if 0 <= self.focus < len(names) else "clean"
+            self.advanced_open = not self.advanced_open
+            if not self.advanced_open and current in _FOCUS_INNER:
+                current = "clean"
+            self.set_focus(current)
             return True
         if action == "gapps":
             self.set_focus("gapps")
