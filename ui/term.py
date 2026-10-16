@@ -21,7 +21,8 @@ import os
 import struct
 import termios
 import unicodedata
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 
 from ui.logbuf import Cell, _cells_to_glyphs
 from core.report import Glyph
@@ -50,6 +51,86 @@ class Hit:
     rect: Rect
     action: str
     payload: object = None
+
+
+def map_body_rect(y: int, h: int, top: int, bottom: int, offset: int) -> tuple[int, int] | None:
+    if h <= 0 or bottom <= top:
+        return None
+    y -= offset
+    if y + h <= top or y >= bottom:
+        return None
+    ny = max(y, top)
+    nh = min(y + h, bottom) - ny
+    if nh <= 0:
+        return None
+    return ny, nh
+
+
+def body_max_scroll(content_end: int, top: int, bottom: int) -> int:
+    view = max(0, bottom - top)
+    if view <= 0:
+        return 0
+    return max(0, content_end - top - view)
+
+
+def clamp_body_scroll(offset: int, content_end: int, top: int, bottom: int) -> int:
+    return min(max(0, offset), body_max_scroll(content_end, top, bottom))
+
+
+@dataclass
+class BodyClip:
+    top: int
+    bottom: int
+    offset: int
+    content_end: int = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.content_end = self.top
+
+    def note(self, y: int, h: int = 1) -> None:
+        self.content_end = max(self.content_end, y + h)
+
+    def map(self, y: int, h: int = 1) -> tuple[int, int] | None:
+        self.note(y, h)
+        return map_body_rect(y, h, self.top, self.bottom, self.offset)
+
+    def clamped(self) -> int:
+        return clamp_body_scroll(self.offset, self.content_end, self.top, self.bottom)
+
+
+_body_clip: BodyClip | None = None
+
+
+class ClipHits:
+    def __init__(self, hits: list[Hit], clip: BodyClip) -> None:
+        self._hits = hits
+        self._clip = clip
+
+    def append(self, hit: Hit) -> None:
+        mapped = self._clip.map(hit.rect.y, hit.rect.h)
+        if mapped is None:
+            return
+        y, h = mapped
+        self._hits.append(Hit(Rect(y, hit.rect.x, h, hit.rect.w), hit.action, hit.payload))
+
+
+@contextmanager
+def body_view(app: object, top: int, bottom: int, page: object):
+    """Clip body drawing and hits to [top, bottom). Chrome stays outside the with-block."""
+    global _body_clip
+    offset = getattr(page, "body_scroll", 0)
+    clip = BodyClip(top, bottom, max(0, offset))
+    prev = _body_clip
+    prev_hits = app.hits
+    _body_clip = clip
+    app.hits = ClipHits(prev_hits, clip)
+    try:
+        yield clip
+    finally:
+        _body_clip = prev
+        app.hits = prev_hits
+        page.body_max = body_max_scroll(clip.content_end, clip.top, clip.bottom)
+        page.body_scroll = clip.clamped()
 
 
 def _cycle(values: tuple, current, ch: int):
@@ -257,6 +338,12 @@ def _sync_curses_size(stdscr: curses.window) -> bool:
 
 
 def _add(win: curses.window, y: int, x: int, text: str, attr: int, width: int) -> None:
+    body = _body_clip
+    if body is not None:
+        mapped = body.map(y, 1)
+        if mapped is None:
+            return
+        y, _h = mapped
     rows, cols = win.getmaxyx()
     if y < 0 or y >= rows or x < 0 or x >= cols or width <= 0:
         return

@@ -20,7 +20,7 @@ import curses
 
 from ui.input import draw_seg_rows as _draw_seg_rows
 from ui.logbuf import LogBuffer
-from ui.term import Hit, Rect
+from ui.term import Hit, Rect, body_view
 
 
 class Page:
@@ -31,7 +31,9 @@ class Page:
         return False
 
     def wheel(self, ctx: Ctx, delta: int) -> None:
-        return
+        if self.overlay():
+            return
+        ctx.wheel_body(self, delta)
 
     def click(self, ctx: Ctx, action: str, payload: object = None) -> bool:
         return False
@@ -67,6 +69,17 @@ class Ctx:
 
     def t(self, key: str, **kwargs: object) -> str:
         return self._sh._t(key, **kwargs)
+
+    def body(self, top: int, bottom: int, page: object):
+        return body_view(self._sh, top, bottom, page)
+
+    def wheel_body(self, page: object, delta: int) -> None:
+        if not hasattr(page, "body_scroll"):
+            return
+        max_off = getattr(page, "body_max", 0)
+        if max_off <= 0:
+            return
+        page.body_scroll = min(max(0, page.body_scroll + delta), max_off)
 
     @property
     def hits(self) -> list[Hit]:

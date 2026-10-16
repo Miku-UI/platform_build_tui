@@ -177,6 +177,7 @@ class BuildPage(Page):
         self.mode = MODE_CONFIG
         self.focus = 0
         self.advanced_open = False
+        self.body_scroll = 0
         self.picker_index = 0
         if self.selected is not None:
             try:
@@ -298,15 +299,15 @@ class BuildPage(Page):
         _rounded_frame(stdscr, y, x, h, w, curses.color_pair(12), "✦  Cinderella")
         inner = max(10, w - 4)
         xx = x + 2
-        row = y + 2
-        limit = y + h - 6
-        hits = ctx.hits
-        _add(stdscr, row, xx, self.combo_preview(), curses.color_pair(2) | curses.A_DIM, inner)
-        row += 2
-        if row < limit:
+        top = y + 2
+        bottom = y + h - 6
+        with ctx.body(top, bottom, self):
+            hits = ctx.hits
+            row = top
+            _add(stdscr, row, xx, self.combo_preview(), curses.color_pair(2) | curses.A_DIM, inner)
+            row += 2
             _add(stdscr, row, xx, ctx.t("device"), curses.color_pair(15) | curses.A_DIM, inner)
             row += 1
-        if row < limit:
             device_label = self.selected.label if self.selected else ctx.t("pick_device")
             box_btn(
                 stdscr,
@@ -320,60 +321,57 @@ class BuildPage(Page):
                 self.has_focus("device"),
             )
             row += 2
-        row = option_block(
-            stdscr,
-            hits,
-            row,
-            xx,
-            inner,
-            limit,
-            ctx.t("variant"),
-            tuple((name, name) for name in VARIANTS),
-            self.variant,
-            "variant",
-        )
-        shown_kind = TARGET_CUSTOM if self.custom_dialog is not None else self.target_kind
-        row = option_block(
-            stdscr,
-            hits,
-            row,
-            xx,
-            inner,
-            limit,
-            ctx.t("target"),
-            self._target_options(ctx),
-            shown_kind,
-            "target",
-        )
-        yn = yes_no(ctx.t)
-        row = option_block(stdscr, hits, row, xx, inner, limit, ctx.t("gapps"), yn, self.gapps, "gapps")
-        row = option_block(
-            stdscr,
-            hits,
-            row,
-            xx,
-            inner,
-            limit,
-            ctx.t("clean"),
-            (
-                (CLEAN_NONE, ctx.t("clean_none")),
-                (CLEAN_INSTALL, ctx.t("clean_install")),
-                (CLEAN_FULL, ctx.t("clean_full")),
-            ),
-            self.clean,
-            "clean",
-        )
-        if row < limit:
+            row = option_block(
+                stdscr,
+                hits,
+                row,
+                xx,
+                inner,
+                None,
+                ctx.t("variant"),
+                tuple((name, name) for name in VARIANTS),
+                self.variant,
+                "variant",
+            )
+            shown_kind = TARGET_CUSTOM if self.custom_dialog is not None else self.target_kind
+            row = option_block(
+                stdscr,
+                hits,
+                row,
+                xx,
+                inner,
+                None,
+                ctx.t("target"),
+                self._target_options(ctx),
+                shown_kind,
+                "target",
+            )
+            yn = yes_no(ctx.t)
+            row = option_block(stdscr, hits, row, xx, inner, None, ctx.t("gapps"), yn, self.gapps, "gapps")
+            row = option_block(
+                stdscr,
+                hits,
+                row,
+                xx,
+                inner,
+                None,
+                ctx.t("clean"),
+                (
+                    (CLEAN_NONE, ctx.t("clean_none")),
+                    (CLEAN_INSTALL, ctx.t("clean_install")),
+                    (CLEAN_FULL, ctx.t("clean_full")),
+                ),
+                self.clean,
+                "clean",
+            )
             mark = "▾" if self.advanced_open else "▸"
             text = f"{mark}  {ctx.t('advanced')}"
             _add(stdscr, row, xx, clip(text, inner), curses.color_pair(15) | curses.A_DIM, inner)
             hits.append(Hit(Rect(row, xx, 1, inner), "advanced"))
             row += 1
-        if self.advanced_open:
-            if row < limit:
+            if self.advanced_open:
                 _add(stdscr, row, xx, ctx.t("jobs"), curses.color_pair(15) | curses.A_DIM, inner)
                 row += 1
-            if row < limit:
                 jobs_row(
                     stdscr,
                     hits,
@@ -386,39 +384,37 @@ class BuildPage(Page):
                     focused=self.has_focus("jobs"),
                 )
                 row += 2
-            row = option_block(
-                stdscr,
-                hits,
-                row,
-                xx,
-                inner,
-                limit,
-                ctx.t("mem_limit"),
-                (
-                    (MEM_LIMIT_OFF, ctx.t("mem_limit_off")),
-                    (MEM_LIMIT_STANDARD, ctx.t("mem_limit_standard")),
-                    (MEM_LIMIT_AGGRESSIVE, ctx.t("mem_limit_aggressive")),
-                ),
-                self._shown_mem_limit(),
-                "mem_limit",
-            )
-            row = option_block(stdscr, hits, row, xx, inner, limit, ctx.t("ccache"), yn, self.ccache, "ccache")
-            row = option_block(
-                stdscr,
-                hits,
-                row,
-                xx,
-                inner,
-                limit,
-                ctx.t("keep_going"),
-                yn,
-                self.keep_going,
-                "keep_going",
-            )
-            if row < limit:
+                row = option_block(
+                    stdscr,
+                    hits,
+                    row,
+                    xx,
+                    inner,
+                    None,
+                    ctx.t("mem_limit"),
+                    (
+                        (MEM_LIMIT_OFF, ctx.t("mem_limit_off")),
+                        (MEM_LIMIT_STANDARD, ctx.t("mem_limit_standard")),
+                        (MEM_LIMIT_AGGRESSIVE, ctx.t("mem_limit_aggressive")),
+                    ),
+                    self._shown_mem_limit(),
+                    "mem_limit",
+                )
+                row = option_block(stdscr, hits, row, xx, inner, None, ctx.t("ccache"), yn, self.ccache, "ccache")
+                row = option_block(
+                    stdscr,
+                    hits,
+                    row,
+                    xx,
+                    inner,
+                    None,
+                    ctx.t("keep_going"),
+                    yn,
+                    self.keep_going,
+                    "keep_going",
+                )
                 _add(stdscr, row, xx, ctx.t("env_vars"), curses.color_pair(15) | curses.A_DIM, inner)
                 row += 1
-            if row < limit:
                 chip_row(
                     stdscr,
                     hits,
@@ -428,7 +424,6 @@ class BuildPage(Page):
                     ((True, ctx.t("env_edit")),),
                     self.has_focus("env_vars"),
                     "env_edit",
-                    limit,
                 )
         if self.status_key:
             _add(
@@ -450,7 +445,7 @@ class BuildPage(Page):
             attr = curses.color_pair(10)
         elif self.has_focus("build"):
             attr = curses.color_pair(3) | curses.A_BOLD
-        fill_btn(stdscr, hits, btn_y, btn_x, btn_h, btn_w, build_label, attr, "build")
+        fill_btn(stdscr, ctx.hits, btn_y, btn_x, btn_h, btn_w, build_label, attr, "build")
         ctx.draw_lang_bar(stdscr, y + h - 2, xx, inner, voices=True)
 
     def _picker_rows(self) -> list[tuple[str, int | str]]:
@@ -685,6 +680,8 @@ class BuildPage(Page):
         if self.env_dialog is not None:
             self.env_dialog.scroll = max(0, self.env_dialog.scroll + delta)
             return
+        if self.overlay():
+            return
         if self.mode == MODE_PICKER:
             self.picker_index = min(max(0, self.picker_index + delta), max(0, len(self.products) - 1))
             return
@@ -695,6 +692,8 @@ class BuildPage(Page):
         if self.mode in (MODE_BUILD, MODE_DONE):
             max_off = max(0, len(ctx.wrapped) - max(1, ctx.log_geom.h))
             self.log_scroll = min(max(0, self.log_scroll - delta), max_off)
+            return
+        ctx.wheel_body(self, delta)
 
     def key(self, ctx, ch: int) -> bool:
         if self.mode == MODE_PICKER:

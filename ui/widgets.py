@@ -87,7 +87,7 @@ def option_block(
     row: int,
     x: int,
     width: int,
-    limit: int,
+    limit: int | None,
     title: str,
     options: tuple[tuple[object, str], ...],
     current: object,
@@ -96,11 +96,11 @@ def option_block(
     title_attr: int | None = None,
 ) -> int:
     """Dim title plus a chip row. Returns the next row after optional gap."""
-    if row < limit:
+    if limit is None or row < limit:
         attr = title_attr if title_attr is not None else curses.color_pair(15) | curses.A_DIM
         _add(stdscr, row, x, title, attr, width)
         row += 1
-    if row < limit:
+    if limit is None or row < limit:
         row += chip_row(stdscr, hits, row, x, width, options, current, action, limit)
     return row + gap
 
