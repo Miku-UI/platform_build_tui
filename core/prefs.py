@@ -19,7 +19,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from core.builder import MEM_LIMIT_KINDS
+from core.builder import MEM_LIMIT_KINDS, sanitize_env_vars
 from ui.i18n import LANGS
 
 TUI_DIR_NAME = ".miku-tui"
@@ -42,6 +42,7 @@ class Prefs:
     git_transport: str | None = None
     check_jobs: int | None = None
     mem_limit: str | None = None
+    env_vars: tuple[tuple[str, str], ...] = ()
 
 
 def tui_dir(top: Path, *, create: bool = False) -> Path:
@@ -86,6 +87,7 @@ def load_prefs(top: Path) -> Prefs:
         git_transport=git_transport if git_transport in _GIT_TRANSPORTS else None,
         check_jobs=check_jobs if isinstance(check_jobs, int) and not isinstance(check_jobs, bool) and 1 <= check_jobs <= 256 else None,
         mem_limit=mem_limit if mem_limit in MEM_LIMIT_KINDS else None,
+        env_vars=sanitize_env_vars(raw.get("env_vars")),
     )
 
 
@@ -113,6 +115,8 @@ def save_prefs(top: Path, prefs: Prefs) -> None:
         data["check_jobs"] = max(1, min(256, int(prefs.check_jobs)))
     if prefs.mem_limit in MEM_LIMIT_KINDS:
         data["mem_limit"] = prefs.mem_limit
+    if prefs.env_vars:
+        data["env_vars"] = [{"name": name, "value": value} for name, value in prefs.env_vars]
     tui_dir(top, create=True)
     path = prefs_path(top)
     tmp = path.with_name(path.name + ".tmp")

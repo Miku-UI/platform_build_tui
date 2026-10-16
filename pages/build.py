@@ -24,6 +24,9 @@ from pathlib import Path
 
 from core.builder import (
     CUSTOM_TARGET_MAX,
+    ENV_NAME_MAX,
+    ENV_VALUE_MAX,
+    ENV_VARS_MAX,
     GSI_TARGET,
     MEM_LIMIT_AGGRESSIVE,
     MEM_LIMIT_KINDS,
@@ -35,6 +38,8 @@ from core.builder import (
     BuildSession,
     mem_limit_tag,
     resolve_make_target,
+    sanitize_env_name,
+    sanitize_env_value,
     sanitize_make_targets,
     target_kinds_for,
 )
@@ -59,7 +64,7 @@ from ui.term import (
 )
 from ui.ctx import Page
 from ui.dialog import Dialog, paint_dialog
-from ui.widgets import box_btn, fill_btn, jobs_row, option_block, text_field, yes_no
+from ui.widgets import box_btn, chip_row, fill_btn, jobs_row, option_block, text_field, yes_no
 
 MODE_CONFIG = "config"
 MODE_PICKER = "picker"
@@ -84,10 +89,12 @@ _FOCUS_INNER = (
     "mem_limit",
     "ccache",
     "keep_going",
+    "env_vars",
 )
 _CUSTOM_FOCUS_INPUT = 0
 _CUSTOM_FOCUS_OK = 1
 _STOP_GRACE_S = 0.4
+_ENV_FOCUS = ("key", "value", "add", "done")
 
 
 @dataclass
@@ -96,6 +103,17 @@ class CustomTargetDialog:
     cursor: int
     focus: int = _CUSTOM_FOCUS_INPUT
     error: bool = False
+
+
+@dataclass
+class EnvVarsDialog:
+    key: str = ""
+    value: str = ""
+    key_cursor: int = 0
+    value_cursor: int = 0
+    focus: str = "key"
+    error: str = ""
+    scroll: int = 0
 
 
 class BuildPage(Page):
@@ -140,9 +158,11 @@ class BuildPage(Page):
         else:
             self.ccache = shutil.which("ccache") is not None
         self.keep_going = prefs.keep_going if prefs.keep_going is not None else False
+        self.env_vars = prefs.env_vars
         self.target_kind = TARGET_OTA
         self.custom_target = ""
         self.custom_dialog: CustomTargetDialog | None = None
+        self.env_dialog: EnvVarsDialog | None = None
         self.dialog: Dialog | None = None
         self._mem_limit_pending: str | None = None
         self.clean = clean
@@ -176,17 +196,22 @@ class BuildPage(Page):
         self.status_args: dict[str, object] = {}
 
     def overlay(self) -> bool:
-        return self.custom_dialog is not None or self.dialog is not None
+        return self.custom_dialog is not None or self.env_dialog is not None or self.dialog is not None
 
     def draw_overlay(self, ctx, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         if self.dialog is not None:
             paint_dialog(ctx, stdscr, y, x, h, w, self.dialog)
+            return
+        if self.env_dialog is not None:
+            self._draw_env_dialog(ctx, stdscr, y, x, h, w)
             return
         self._draw_custom_dialog(ctx, stdscr, y, x, h, w)
 
     def key_overlay(self, ctx, ch: int) -> bool:
         if self.dialog is not None:
             return self._key_mem_limit_dialog(ctx, ch)
+        if self.env_dialog is not None:
+            return self._key_env_dialog(ctx, ch)
         return self._key_custom_dialog(ctx, ch)
 
     def _focus_names(self) -> tuple[str, ...]:
@@ -240,6 +265,9 @@ class BuildPage(Page):
     def close(self) -> bool:
         if self.dialog is not None:
             self._cancel_mem_limit()
+            return True
+        if self.env_dialog is not None:
+            self.env_dialog = None
             return True
         if self.custom_dialog is not None:
             self.custom_dialog = None
@@ -375,7 +403,7 @@ class BuildPage(Page):
                 "mem_limit",
             )
             row = option_block(stdscr, hits, row, xx, inner, limit, ctx.t("ccache"), yn, self.ccache, "ccache")
-            option_block(
+            row = option_block(
                 stdscr,
                 hits,
                 row,
@@ -386,8 +414,22 @@ class BuildPage(Page):
                 yn,
                 self.keep_going,
                 "keep_going",
-                gap=0,
             )
+            if row < limit:
+                _add(stdscr, row, xx, ctx.t("env_vars"), curses.color_pair(15) | curses.A_DIM, inner)
+                row += 1
+            if row < limit:
+                chip_row(
+                    stdscr,
+                    hits,
+                    row,
+                    xx,
+                    inner,
+                    ((True, ctx.t("env_edit")),),
+                    self.has_focus("env_vars"),
+                    "env_edit",
+                    limit,
+                )
         if self.status_key:
             _add(
                 stdscr,
@@ -640,6 +682,9 @@ class BuildPage(Page):
         return tuple(options)
 
     def wheel(self, ctx, delta: int) -> None:
+        if self.env_dialog is not None:
+            self.env_dialog.scroll = max(0, self.env_dialog.scroll + delta)
+            return
         if self.mode == MODE_PICKER:
             self.picker_index = min(max(0, self.picker_index + delta), max(0, len(self.products) - 1))
             return
@@ -703,6 +748,8 @@ class BuildPage(Page):
             self.ccache = _cycle((True, False), self.ccache, ch)
         elif name == "keep_going":
             self.keep_going = _cycle((True, False), self.keep_going, ch)
+        elif name == "env_vars" and ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
+            self._open_env_dialog()
         elif name == "clean":
             self.clean = _cycle((CLEAN_NONE, CLEAN_INSTALL, CLEAN_FULL), self.clean, ch)
         elif name == "build" and ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
@@ -826,6 +873,27 @@ class BuildPage(Page):
             self.set_focus("keep_going")
             if isinstance(payload, bool):
                 self.keep_going = payload
+            return True
+        if action == "env_edit":
+            self.set_focus("env_vars")
+            self._open_env_dialog()
+            return True
+        if action == "env_draft_key":
+            if self.env_dialog is not None:
+                self.env_dialog.focus = "key"
+            return True
+        if action == "env_draft_value":
+            if self.env_dialog is not None:
+                self.env_dialog.focus = "value"
+            return True
+        if action == "env_add":
+            self._add_env_var()
+            return True
+        if action == "env_del" and isinstance(payload, int):
+            self._del_env_var(payload)
+            return True
+        if action == "env_done":
+            self.env_dialog = None
             return True
         if action == "clean":
             self.set_focus("clean")
@@ -989,6 +1057,212 @@ class BuildPage(Page):
             dlg.error = False
         return False
 
+    def _open_env_dialog(self) -> None:
+        self.env_dialog = EnvVarsDialog()
+        self.set_focus("env_vars")
+
+    def _add_env_var(self) -> None:
+        dlg = self.env_dialog
+        if dlg is None:
+            return
+        name = sanitize_env_name(dlg.key)
+        value = sanitize_env_value(dlg.value)
+        if not name or value is None:
+            dlg.error = "env_invalid"
+            dlg.focus = "key"
+            return
+        if any(existing == name for existing, _val in self.env_vars):
+            dlg.error = "env_duplicate"
+            dlg.focus = "key"
+            return
+        if len(self.env_vars) >= ENV_VARS_MAX:
+            dlg.error = "env_invalid"
+            dlg.focus = "key"
+            return
+        self.env_vars = self.env_vars + ((name, value),)
+        dlg.key = ""
+        dlg.value = ""
+        dlg.key_cursor = 0
+        dlg.value_cursor = 0
+        dlg.error = ""
+        dlg.focus = "key"
+        dlg.scroll = len(self.env_vars)
+
+    def _del_env_var(self, index: int) -> None:
+        if not (0 <= index < len(self.env_vars)):
+            return
+        self.env_vars = self.env_vars[:index] + self.env_vars[index + 1 :]
+        if self.env_dialog is not None:
+            self.env_dialog.error = ""
+
+    def _draw_plain_field(
+        self, stdscr: curses.window, y: int, x: int, width: int, value: str, attr: int
+    ) -> None:
+        inner = max(1, width - 2)
+        shown = clip(value, inner)
+        pad = max(0, inner - dw(shown))
+        text = " " + shown + " " * pad
+        if dw(text) < width:
+            text += " "
+        _add(stdscr, y, x, clip(text, width), attr, width)
+
+    def _draw_env_dialog(self, ctx, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        dlg = self.env_dialog
+        if dlg is None:
+            return
+        title = ctx.t("env_vars")
+        add_l = f" {ctx.t('env_add')} "
+        del_l = f" {ctx.t('env_del')} "
+        done_l = f" {ctx.t('env_done')} "
+        err = ctx.t(dlg.error) if dlg.error else ""
+        box_w = min(w - 2, max(42, w - 6))
+        box_h = min(h - 2, max(10, h - 4))
+        by = y + max(1, (h - box_h) // 2)
+        bx = x + max(1, (w - box_w) // 2)
+        fill_a = curses.color_pair(7)
+        for i in range(box_h):
+            _add(stdscr, by + i, bx, " " * box_w, fill_a, box_w)
+        _rounded_frame(stdscr, by, bx, box_h, box_w, curses.color_pair(12), f"✦  {title}", 0)
+        cx = bx + 2
+        cw = max(12, box_w - 4)
+        btn_w = max(dw(add_l), dw(del_l))
+        btn_x = cx + max(0, cw - btn_w)
+        rest = max(8, btn_x - cx - 1)
+        key_w = max(4, rest // 2)
+        val_w = max(4, rest - key_w - 1)
+        key_x = cx
+        val_x = cx + key_w + 1
+        head_y = by + 2
+        list_y = by + 3
+        btn_y = by + box_h - 2
+        err_y = btn_y - 1 if err else btn_y
+        visible = max(1, err_y - list_y)
+        total = len(self.env_vars) + 1
+        dlg.scroll = min(max(0, dlg.scroll), max(0, total - visible))
+        _add(stdscr, head_y, key_x, clip(ctx.t("env_name"), key_w), curses.color_pair(15) | curses.A_DIM, key_w)
+        _add(stdscr, head_y, val_x, clip(ctx.t("env_value"), val_w), curses.color_pair(15) | curses.A_DIM, val_w)
+        cur_x = key_x + 1
+        cur_y = list_y
+        for i in range(visible):
+            idx = dlg.scroll + i
+            ry = list_y + i
+            if idx < len(self.env_vars):
+                name, value = self.env_vars[idx]
+                self._draw_plain_field(stdscr, ry, key_x, key_w, name, curses.color_pair(10))
+                self._draw_plain_field(stdscr, ry, val_x, val_w, value, curses.color_pair(10))
+                _add(stdscr, ry, btn_x, clip(del_l, btn_w), curses.color_pair(10), btn_w)
+                ctx.hits.append(Hit(Rect(ry, btn_x, 1, min(btn_w, dw(del_l))), "env_del", idx))
+            elif idx == len(self.env_vars):
+                kx = text_field(
+                    stdscr,
+                    ctx.hits,
+                    ry,
+                    key_x,
+                    key_w,
+                    dlg.key,
+                    "",
+                    "env_draft_key",
+                    dlg.focus == "key",
+                    dlg.key_cursor,
+                )
+                vx = text_field(
+                    stdscr,
+                    ctx.hits,
+                    ry,
+                    val_x,
+                    val_w,
+                    dlg.value,
+                    "",
+                    "env_draft_value",
+                    dlg.focus == "value",
+                    dlg.value_cursor,
+                )
+                add_a = curses.color_pair(3) | curses.A_BOLD if dlg.focus == "add" else curses.color_pair(10)
+                _add(stdscr, ry, btn_x, clip(add_l, btn_w), add_a, btn_w)
+                ctx.hits.append(Hit(Rect(ry, btn_x, 1, min(btn_w, dw(add_l))), "env_add"))
+                if dlg.focus == "key":
+                    cur_x, cur_y = kx, ry
+                elif dlg.focus == "value":
+                    cur_x, cur_y = vx, ry
+        if err:
+            _add(stdscr, err_y, cx, clip(err, cw), curses.color_pair(5) | curses.A_BOLD, cw)
+        done_a = curses.color_pair(3) | curses.A_BOLD if dlg.focus == "done" else curses.color_pair(10)
+        done_x = cx + max(0, cw - dw(done_l))
+        _add(stdscr, btn_y, done_x, done_l, done_a, dw(done_l))
+        ctx.hits.append(Hit(Rect(btn_y, done_x, 1, dw(done_l)), "env_done"))
+        if dlg.focus in ("key", "value"):
+            try:
+                curses.curs_set(1)
+                stdscr.move(cur_y, min(max(cx, cur_x), cx + cw - 1))
+            except curses.error:
+                pass
+        else:
+            try:
+                curses.curs_set(0)
+            except curses.error:
+                pass
+
+    def _key_env_dialog(self, ctx, ch: int) -> bool:
+        dlg = self.env_dialog
+        if dlg is None:
+            return False
+        if ch in (curses.KEY_PPAGE,):
+            dlg.scroll = max(0, dlg.scroll - 1)
+            return False
+        if ch in (curses.KEY_NPAGE,):
+            dlg.scroll += 1
+            return False
+        if ch in (9, curses.KEY_DOWN):
+            idx = _ENV_FOCUS.index(dlg.focus) if dlg.focus in _ENV_FOCUS else 0
+            dlg.focus = _ENV_FOCUS[(idx + 1) % len(_ENV_FOCUS)]
+            return False
+        if ch in (getattr(curses, "KEY_BTAB", 353), curses.KEY_UP):
+            idx = _ENV_FOCUS.index(dlg.focus) if dlg.focus in _ENV_FOCUS else 0
+            dlg.focus = _ENV_FOCUS[(idx - 1) % len(_ENV_FOCUS)]
+            return False
+        if dlg.focus == "add":
+            if ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
+                ctx.action("env_add")
+            return False
+        if dlg.focus == "done":
+            if ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
+                ctx.action("env_done")
+            return False
+        if ch in (curses.KEY_ENTER, 10, 13):
+            ctx.action("env_add")
+            return False
+        if dlg.focus == "key":
+            dlg.key, dlg.key_cursor = self._edit_line(dlg.key, dlg.key_cursor, ch, ENV_NAME_MAX)
+        else:
+            dlg.value, dlg.value_cursor = self._edit_line(dlg.value, dlg.value_cursor, ch, ENV_VALUE_MAX)
+        dlg.error = ""
+        return False
+
+    def _edit_line(self, text: str, cursor: int, ch: int, maxlen: int) -> tuple[str, int]:
+        cursor = min(max(0, cursor), len(text))
+        if ch in (curses.KEY_LEFT,):
+            return text, max(0, cursor - 1)
+        if ch in (curses.KEY_RIGHT,):
+            return text, min(len(text), cursor + 1)
+        if ch in (curses.KEY_HOME,):
+            return text, 0
+        if ch in (curses.KEY_END,):
+            return text, len(text)
+        if ch in (curses.KEY_BACKSPACE, 127, 8):
+            if cursor <= 0:
+                return text, cursor
+            return text[: cursor - 1] + text[cursor :], cursor - 1
+        if ch in (getattr(curses, "KEY_DC", 330),):
+            if cursor >= len(text):
+                return text, cursor
+            return text[:cursor] + text[cursor + 1 :], cursor
+        if 32 <= ch <= 126:
+            if len(text) >= maxlen:
+                return text, cursor
+            char = chr(ch)
+            return text[:cursor] + char + text[cursor :], cursor + 1
+        return text, cursor
+
     def _start_build(self, ctx) -> None:
         if self.selected is None:
             self.set_status("need_device")
@@ -1023,6 +1297,7 @@ class BuildPage(Page):
             make_target=make_target,
             show_sha256=self.target_kind == TARGET_OTA and not self.selected.is_gsi,
             mem_limit=self.mem_limit,
+            env_vars=self.env_vars,
         )
 
         def on_data(text: str, buf: LogBuffer = log, tracker: PhaseTracker = phase) -> None:

@@ -402,8 +402,6 @@ def handle_mouse(app) -> None:
 
 def handle_wheel(app, delta: int) -> None:
     page = app.current_page()
-    if page.overlay():
-        return
     page.wheel(app.make_ctx(), delta)
 
 

@@ -65,6 +65,10 @@ def mem_limit_tag(kind: str) -> str:
 
 _MAKE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.+/-]*$")
 CUSTOM_TARGET_MAX = 128
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+ENV_NAME_MAX = 64
+ENV_VALUE_MAX = 512
+ENV_VARS_MAX = 32
 
 
 def sanitize_make_targets(raw: str) -> str:
@@ -105,6 +109,42 @@ def quote_make_target(raw: str) -> str:
     return " ".join(shlex.quote(tok) for tok in tokens)
 
 
+def sanitize_env_name(raw: str) -> str:
+    name = raw.strip()
+    if not name or len(name) > ENV_NAME_MAX or not _ENV_NAME_RE.fullmatch(name):
+        return ""
+    return name
+
+
+def sanitize_env_value(raw: str) -> str | None:
+    if len(raw) > ENV_VALUE_MAX or "\n" in raw or "\r" in raw or "\0" in raw:
+        return None
+    return raw
+
+
+def sanitize_env_vars(raw: object) -> tuple[tuple[str, str], ...]:
+    if not isinstance(raw, list):
+        return ()
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        val = item.get("value")
+        if not isinstance(name, str) or not isinstance(val, str):
+            continue
+        name = sanitize_env_name(name)
+        value = sanitize_env_value(val)
+        if not name or value is None or name in seen:
+            continue
+        seen.add(name)
+        out.append((name, value))
+        if len(out) >= ENV_VARS_MAX:
+            break
+    return tuple(out)
+
+
 @dataclass
 class BuildConfig:
     product: Product
@@ -118,6 +158,7 @@ class BuildConfig:
     make_target: str = MAKE_TARGET
     show_sha256: bool = True
     mem_limit: str = MEM_LIMIT_OFF
+    env_vars: tuple[tuple[str, str], ...] = ()
 
     @property
     def lunch_combo(self) -> str:
@@ -360,6 +401,11 @@ def _build_env(config: BuildConfig) -> dict[str, str]:
     env.setdefault("NINJA_STATUS", "[%f/%t %e] ")
     if env.get("TERM") in (None, "", "dumb", "unknown"):
         env["TERM"] = "xterm-256color"
+    for name, value in config.env_vars:
+        key = sanitize_env_name(name)
+        val = sanitize_env_value(value)
+        if key and val is not None:
+            env[key] = val
     return env
 
 

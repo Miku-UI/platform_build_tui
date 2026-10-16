@@ -569,6 +569,7 @@ class BuildTui:
             self.scm.git_transport,
             self.scm.check_jobs,
             self.build.mem_limit,
+            self.build.env_vars,
         )
 
     def _persist_if_changed(self, before: tuple) -> None:
@@ -590,6 +591,7 @@ class BuildTui:
                 git_transport=self.scm.git_transport,
                 check_jobs=self.scm.check_jobs,
                 mem_limit=self.build.mem_limit,
+                env_vars=self.build.env_vars,
             ),
         )
 

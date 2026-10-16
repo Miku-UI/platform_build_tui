@@ -657,6 +657,8 @@ class ScmPage(Page):
         self.result_index = min(max(0, self.result_index + delta), n - 1)
 
     def wheel(self, ctx, delta: int) -> None:
+        if self.overlay():
+            return
         if self.page == SCM_RESULT:
             self.move_result(delta)
             return
