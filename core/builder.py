@@ -18,6 +18,7 @@ import fcntl
 import os
 import pty
 import re
+import secrets
 import select
 import shlex
 import shutil
@@ -29,6 +30,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from core.devices import Product
@@ -62,6 +64,11 @@ def memory_high_spec(kind: str) -> str | None:
 def mem_limit_tag(kind: str) -> str:
     spec = memory_high_spec(kind)
     return f"mem{spec}" if spec else ""
+
+
+def make_upgrade_build_number() -> str:
+    day = datetime.now(timezone.utc).strftime("%Y%m%d")
+    return f"{day}-{secrets.token_hex(2)}"
 
 _MAKE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.+/-]*$")
 CUSTOM_TARGET_MAX = 128
@@ -159,6 +166,8 @@ class BuildConfig:
     show_sha256: bool = True
     mem_limit: str = MEM_LIMIT_OFF
     env_vars: tuple[tuple[str, str], ...] = ()
+    mark_upgrade: bool = False
+    build_number: str = ""
 
     @property
     def lunch_combo(self) -> str:
@@ -406,6 +415,8 @@ def _build_env(config: BuildConfig) -> dict[str, str]:
         val = sanitize_env_value(value)
         if key and val is not None:
             env[key] = val
+    if config.mark_upgrade and config.build_number:
+        env["BUILD_NUMBER"] = config.build_number
     return env
 
 
@@ -420,6 +431,8 @@ def _build_script(top: Path, config: BuildConfig, *, markers: bool = False) -> s
         "set -o pipefail",
         f"cd {shlex.quote(str(top))}",
     ]
+    if config.mark_upgrade and config.build_number:
+        lines.append("printf 'BUILD_NUMBER=%s\\n' " + shlex.quote(config.build_number))
     if markers:
         lines.append(_phase_printf("setup"))
     lines.append("source build/envsetup.sh")

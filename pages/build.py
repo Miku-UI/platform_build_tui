@@ -36,6 +36,7 @@ from core.builder import (
     TARGET_OTA,
     BuildConfig,
     BuildSession,
+    make_upgrade_build_number,
     mem_limit_tag,
     resolve_make_target,
     sanitize_env_name,
@@ -83,6 +84,7 @@ _FOCUS_OUTER = (
     "target",
     "gapps",
     "clean",
+    "mark_upgrade",
 )
 _FOCUS_INNER = (
     "jobs",
@@ -158,6 +160,7 @@ class BuildPage(Page):
         else:
             self.ccache = shutil.which("ccache") is not None
         self.keep_going = prefs.keep_going if prefs.keep_going is not None else False
+        self.mark_upgrade = prefs.mark_upgrade if prefs.mark_upgrade is not None else False
         self.env_vars = prefs.env_vars
         self.target_kind = TARGET_OTA
         self.custom_target = ""
@@ -363,6 +366,18 @@ class BuildPage(Page):
                 ),
                 self.clean,
                 "clean",
+            )
+            row = option_block(
+                stdscr,
+                hits,
+                row,
+                xx,
+                inner,
+                None,
+                ctx.t("mark_upgrade"),
+                yn,
+                self.mark_upgrade,
+                "mark_upgrade",
             )
             mark = "▾" if self.advanced_open else "▸"
             text = f"{mark}  {ctx.t('advanced')}"
@@ -592,6 +607,8 @@ class BuildPage(Page):
             extras.append("-k 0")
         if self.clean != CLEAN_NONE:
             extras.append(self.clean)
+        if self.mark_upgrade:
+            extras.append("upgrade")
         tag = mem_limit_tag(self._shown_mem_limit())
         if tag:
             extras.append(tag)
@@ -751,6 +768,8 @@ class BuildPage(Page):
             self._open_env_dialog()
         elif name == "clean":
             self.clean = _cycle((CLEAN_NONE, CLEAN_INSTALL, CLEAN_FULL), self.clean, ch)
+        elif name == "mark_upgrade":
+            self.mark_upgrade = _cycle((True, False), self.mark_upgrade, ch)
         elif name == "build" and ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
             self._start_build(ctx)
         ctx.persist_if_changed(before)
@@ -898,6 +917,11 @@ class BuildPage(Page):
             self.set_focus("clean")
             if isinstance(payload, str):
                 self.clean = payload
+            return True
+        if action == "mark_upgrade":
+            self.set_focus("mark_upgrade")
+            if isinstance(payload, bool):
+                self.mark_upgrade = payload
             return True
         if action == "build":
             self.set_focus("build")
@@ -1298,6 +1322,8 @@ class BuildPage(Page):
             show_sha256=self.target_kind == TARGET_OTA and not self.selected.is_gsi,
             mem_limit=self.mem_limit,
             env_vars=self.env_vars,
+            mark_upgrade=self.mark_upgrade,
+            build_number=make_upgrade_build_number() if self.mark_upgrade else "",
         )
 
         def on_data(text: str, buf: LogBuffer = log, tracker: PhaseTracker = phase) -> None:

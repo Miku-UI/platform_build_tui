@@ -43,6 +43,7 @@ class Prefs:
     check_jobs: int | None = None
     mem_limit: str | None = None
     env_vars: tuple[tuple[str, str], ...] = ()
+    mark_upgrade: bool | None = None
 
 
 def tui_dir(top: Path, *, create: bool = False) -> Path:
@@ -75,6 +76,7 @@ def load_prefs(top: Path) -> Prefs:
     git_transport = raw.get("git_transport")
     check_jobs = raw.get("check_jobs")
     mem_limit = raw.get("mem_limit")
+    mark_upgrade = raw.get("mark_upgrade")
     return Prefs(
         device=device.strip() if isinstance(device, str) and device.strip() else None,
         variant=variant if variant in _VARIANTS else None,
@@ -88,6 +90,7 @@ def load_prefs(top: Path) -> Prefs:
         check_jobs=check_jobs if isinstance(check_jobs, int) and not isinstance(check_jobs, bool) and 1 <= check_jobs <= 256 else None,
         mem_limit=mem_limit if mem_limit in MEM_LIMIT_KINDS else None,
         env_vars=sanitize_env_vars(raw.get("env_vars")),
+        mark_upgrade=mark_upgrade if isinstance(mark_upgrade, bool) else None,
     )
 
 
@@ -117,6 +120,8 @@ def save_prefs(top: Path, prefs: Prefs) -> None:
         data["mem_limit"] = prefs.mem_limit
     if prefs.env_vars:
         data["env_vars"] = [{"name": name, "value": value} for name, value in prefs.env_vars]
+    if isinstance(prefs.mark_upgrade, bool):
+        data["mark_upgrade"] = prefs.mark_upgrade
     tui_dir(top, create=True)
     path = prefs_path(top)
     tmp = path.with_name(path.name + ".tmp")
