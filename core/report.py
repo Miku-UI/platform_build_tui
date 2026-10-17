@@ -81,6 +81,7 @@ class BuildReport:
     device: str
     model: str
     gapps: bool
+    mark_upgrade: bool
     artifact_rel: str | None
     artifact_size: int | None
     size_delta: int | None
@@ -477,6 +478,7 @@ def build_report(
     package_hint: str | None,
     log_rows: list[list[Glyph]],
     gapps: bool,
+    mark_upgrade: bool = False,
     show_sha256: bool = True,
     systemimage: bool = False,
 ) -> BuildReport:
@@ -549,6 +551,7 @@ def build_report(
         device=product.product_device,
         model=product.product_model,
         gapps=gapps,
+        mark_upgrade=mark_upgrade,
         artifact_rel=artifact_rel,
         artifact_size=artifact_size,
         size_delta=size_delta,

@@ -1377,6 +1377,7 @@ class BuildPage(Page):
             package_hint=package_path,
             log_rows=self.log.glyph_rows(),
             gapps=session.config.gapps,
+            mark_upgrade=session.config.mark_upgrade,
             show_sha256=session.config.show_sha256,
             systemimage=session.config.make_target == GSI_TARGET,
         )

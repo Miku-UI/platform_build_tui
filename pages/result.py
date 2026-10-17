@@ -130,6 +130,10 @@ def result_rows(report: BuildReport, width: int, t) -> list[list[tuple[str, int]
             kv(t("result_has_gapps"), t("yes"), curses.color_pair(4) | curses.A_BOLD)
         else:
             kv(t("result_has_gapps"), t("no"), curses.color_pair(5) | curses.A_BOLD)
+        if report.mark_upgrade:
+            kv(t("result_mark_upgrade"), t("yes"), curses.color_pair(4) | curses.A_BOLD)
+        else:
+            kv(t("result_mark_upgrade"), t("no"), curses.color_pair(5) | curses.A_BOLD)
         path = report.artifact_rel or t("result_unknown")
         kv(t("result_artifact_path"), path)
         size = fmt_mb(report.artifact_size) if report.artifact_size is not None else t("result_unknown")
