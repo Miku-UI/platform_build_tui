@@ -32,10 +32,12 @@ _PACK_NEEDLES = (
     "Package OTA",
     "Build ota from target files",
     "Package Complete",
+    "Building target files",
 )
 _COUNT_NEEDLES = (
     "Package OTA",
     "Target system fs image",
+    "Building target files",
 )
 
 _RANK = {
