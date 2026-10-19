@@ -287,21 +287,25 @@ def find_artifact(
         except OSError:
             pass
         return None
-    newest: Path | None = None
-    newest_mtime = started - 1
-    try:
-        zips = list(out_dir.glob("MikuUI-*.zip"))
-    except OSError:
-        zips = []
-    for path in zips:
+    # Flash zip first so a leftover updatepackage is not preferred.
+    for pattern in ("MikuUI-*.zip", "*-img.zip"):
+        newest: Path | None = None
+        newest_mtime = started - 1
         try:
-            mtime = path.stat().st_mtime
+            zips = list(out_dir.glob(pattern))
         except OSError:
-            continue
-        if mtime >= started and mtime >= newest_mtime:
-            newest = path
-            newest_mtime = mtime
-    return newest
+            zips = []
+        for path in zips:
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue
+            if mtime >= started and mtime >= newest_mtime:
+                newest = path
+                newest_mtime = mtime
+        if newest is not None:
+            return newest
+    return None
 
 
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
