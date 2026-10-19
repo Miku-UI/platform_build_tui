@@ -33,11 +33,7 @@ _PACK_NEEDLES = (
     "Build ota from target files",
     "Package Complete",
     "Building target files",
-)
-_COUNT_NEEDLES = (
-    "Package OTA",
     "Target system fs image",
-    "Building target files",
 )
 
 _RANK = {
@@ -79,8 +75,6 @@ class PhaseTracker:
         self.key = "phase_setup"
         self._make = False
         self.entered: dict[str, float] = {"phase_setup": time.time()}
-        self.ninja_total: int | None = None
-        self.ninja_done: int | None = None
         self.package_path: str | None = None
 
     def feed(self, text: str) -> None:
@@ -99,11 +93,9 @@ class PhaseTracker:
         with self._lock:
             return self.key, {}
 
-    def snapshot_report(
-        self,
-    ) -> tuple[str, dict[str, float], int | None, int | None, str | None]:
+    def snapshot_report(self) -> tuple[str, dict[str, float], str | None]:
         with self._lock:
-            return self.key, dict(self.entered), self.ninja_total, self.ninja_done, self.package_path
+            return self.key, dict(self.entered), self.package_path
 
     def _advance(self, key: str) -> None:
         new = _RANK[key]
@@ -161,24 +153,10 @@ class PhaseTracker:
             if _KATI_RE.search(rest) or _KATI_RE.search(line):
                 self._advance("phase_kati")
                 return
-            try:
-                done = int(prog.group(1))
-                total = int(prog.group(2))
-            except ValueError:
-                done = 0
-                total = 0
-            if any(n in line for n in _COUNT_NEEDLES) and _RANK[self.key] >= _RANK["phase_ninja"]:
-                if total > 0:
-                    self.ninja_total = total
-                self.ninja_done = done
-                self._advance("phase_package")
-                return
             if _is_package(line) and _RANK[self.key] >= _RANK["phase_ninja"]:
                 self._advance("phase_package")
                 return
             self._advance("phase_ninja")
-            if self.key == "phase_ninja":
-                self.ninja_done = done
             return
         if _is_package(line) and _RANK[self.key] >= _RANK["phase_ninja"]:
             self._advance("phase_package")

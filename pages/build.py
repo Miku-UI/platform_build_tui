@@ -1360,7 +1360,7 @@ class BuildPage(Page):
         threading.Thread(target=session.stop, daemon=True).start()
 
     def _open_result(self, ctx, session: BuildSession, ok: bool) -> None:
-        phase_key, entered, ninja_total, ninja_done, package_path = self.phase.snapshot_report()
+        phase_key, entered, package_path = self.phase.snapshot_report()
         started = session.started_at
         finished = session.finished_at or time.time()
         report = build_report(
@@ -1372,8 +1372,6 @@ class BuildPage(Page):
             finished=finished,
             entered=entered,
             phase_key=phase_key,
-            ninja_total=ninja_total,
-            ninja_done=ninja_done,
             package_hint=package_path,
             log_rows=self.log.glyph_rows(),
             gapps=session.config.gapps,

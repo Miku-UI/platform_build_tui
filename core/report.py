@@ -98,6 +98,67 @@ def product_out(top: Path, product: Product) -> Path:
     return top / "out" / "target" / "product" / product.product_device
 
 
+def _proto_varint(data: bytes, i: int) -> tuple[int, int] | None:
+    n = len(data)
+    val = 0
+    shift = 0
+    while i < n:
+        b = data[i]
+        i += 1
+        val |= (b & 0x7F) << shift
+        if b < 0x80:
+            return val, i
+        shift += 7
+        if shift >= 64:
+            return None
+    return None
+
+
+def read_build_progress(top: Path) -> int | None:
+    """soong_ui `out/build_progress.pb`; use finished_actions (never shrinks)."""
+    path = top / "out" / "build_progress.pb"
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    fields: dict[int, int] = {}
+    i = 0
+    n = len(data)
+    while i < n:
+        parsed = _proto_varint(data, i)
+        if parsed is None:
+            break
+        key, i = parsed
+        field, wtype = key >> 3, key & 7
+        if wtype == 0:
+            parsed = _proto_varint(data, i)
+            if parsed is None:
+                break
+            val, i = parsed
+            fields[field] = val
+        elif wtype == 1:
+            i += 8
+        elif wtype == 2:
+            parsed = _proto_varint(data, i)
+            if parsed is None:
+                break
+            ln, i = parsed
+            i += ln
+        elif wtype == 5:
+            i += 4
+        else:
+            break
+        if i > n:
+            return None
+    finished = fields.get(2, 0)
+    total = fields.get(1, 0)
+    if finished > 0:
+        return finished
+    if total > 0:
+        return total
+    return None
+
+
 def relpath(path: Path, top: Path) -> str:
     try:
         return str(path.resolve().relative_to(top.resolve()))
@@ -477,8 +538,6 @@ def build_report(
     finished: float,
     entered: dict[str, float],
     phase_key: str,
-    ninja_total: int | None,
-    ninja_done: int | None,
     package_hint: str | None,
     log_rows: list[list[Glyph]],
     gapps: bool,
@@ -491,10 +550,7 @@ def build_report(
     prev = load_stats(out_dir)
     timings = timings_from_entered(entered, started, finished)
     total = finished - started
-    if ok:
-        targets = ninja_total if ninja_total and ninja_total > 0 else None
-    else:
-        targets = ninja_done if ninja_done is not None else None
+    targets = read_build_progress(top)
     targets_delta = None
     if targets is not None and "targets" in prev:
         targets_delta = targets - prev["targets"]
