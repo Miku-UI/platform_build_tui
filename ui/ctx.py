@@ -176,5 +176,13 @@ class Ctx:
     def persist_if_changed(self, before: tuple) -> None:
         self._sh._persist_if_changed(before)
 
+    @property
+    def is_need_lunch(self) -> bool:
+        return self._sh.is_need_lunch
+
+    @is_need_lunch.setter
+    def is_need_lunch(self, value: bool) -> None:
+        self._sh.is_need_lunch = bool(value)
+
     def tick_host(self, force_disk: bool = False) -> None:
         self._sh.host.tick(force_disk=force_disk)

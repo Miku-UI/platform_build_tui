@@ -37,6 +37,7 @@ from core.builder import (
     BuildConfig,
     BuildSession,
     make_upgrade_build_number,
+    soong_used_env_path,
     mem_limit_tag,
     resolve_make_target,
     sanitize_env_name,
@@ -1309,6 +1310,9 @@ class BuildPage(Page):
         ctx.clear_pointer_state()
         self.set_status()
         make_target = self._make_target()
+        need_lunch = ctx.is_need_lunch
+        if not need_lunch and not soong_used_env_path(self.top, self.selected.product_name).is_file():
+            need_lunch = True
         config = BuildConfig(
             product=self.selected,
             jobs=self.jobs,
@@ -1324,6 +1328,7 @@ class BuildPage(Page):
             env_vars=self.env_vars,
             mark_upgrade=self.mark_upgrade,
             build_number=make_upgrade_build_number() if self.mark_upgrade else "",
+            lunch=need_lunch,
         )
 
         def on_data(text: str, buf: LogBuffer = log, tracker: PhaseTracker = phase) -> None:
@@ -1339,6 +1344,8 @@ class BuildPage(Page):
             self.session = None
             self.mode = MODE_CONFIG
             self.set_status("mem_limit_no_systemd")
+        else:
+            ctx.is_need_lunch = False
         rows, cols = ctx.stdscr.getmaxyx() if ctx.stdscr is not None else (24, 80)
         _left, _gap, _cy, _cx, ch, cw = _panel_geom(rows, cols)
         session.set_winsize(max(8, ch - 8), max(20, cw - 4))

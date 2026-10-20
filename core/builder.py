@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import pty
 import re
@@ -168,6 +169,7 @@ class BuildConfig:
     env_vars: tuple[tuple[str, str], ...] = ()
     mark_upgrade: bool = False
     build_number: str = ""
+    lunch: bool = True
 
     @property
     def lunch_combo(self) -> str:
@@ -207,7 +209,7 @@ class BuildSession:
         return self._returncode
 
     def start(self) -> None:
-        env = _build_env(self.config)
+        env = _build_env(self.config, self.top)
         script = _build_script(self.top, self.config, markers=not self.inherit_tty)
         argv = ["bash", "-c", script]
         high = memory_high_spec(self.config.mem_limit)
@@ -388,11 +390,52 @@ def _stop_mem_scope() -> None:
     subprocess.run([systemctl, "--user", "reset-failed", unit], **kwargs)
 
 
-def _build_env(config: BuildConfig) -> dict[str, str]:
+def soong_used_env_path(top: Path, product_name: str) -> Path:
+    out = os.environ.get("OUT_DIR") or "out"
+    out_dir = Path(out)
+    if not out_dir.is_absolute():
+        out_dir = top / out_dir
+    return out_dir / "soong" / f"soong.environment.used.{product_name}.build"
+
+
+def load_soong_used_env(path: Path) -> dict[str, str]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, list):
+        return {}
+    out: dict[str, str] = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        key = item.get("Key")
+        val = item.get("Value")
+        if isinstance(key, str) and isinstance(val, str):
+            out[key] = val
+    return out
+
+
+def _build_env(config: BuildConfig, top: Path) -> dict[str, str]:
     env = os.environ.copy()
-    env.pop("TARGET_PRODUCT", None)
-    env.pop("TARGET_RELEASE", None)
-    env.pop("TARGET_BUILD_VARIANT", None)
+    if not config.lunch:
+        for key, val in load_soong_used_env(
+            soong_used_env_path(top, config.product.product_name)
+        ).items():
+            if val:
+                env[key] = val
+            else:
+                env.pop(key, None)
+    env["TARGET_PRODUCT"] = config.product.product_name
+    env["TARGET_RELEASE"] = config.release
+    env["TARGET_BUILD_VARIANT"] = config.variant
+    env["TARGET_BUILD_TYPE"] = "release"
+    env.pop("TARGET_BUILD_APPS", None)
+    product = config.product.product_name
+    if product.startswith("miku_"):
+        env["MIKU_BUILD"] = product[len("miku_") :]
+    else:
+        env.pop("MIKU_BUILD", None)
     if config.gapps:
         env["MIKU_GAPPS"] = "true"
     else:
@@ -436,9 +479,12 @@ def _build_script(top: Path, config: BuildConfig, *, markers: bool = False) -> s
     if markers:
         lines.append(_phase_printf("setup"))
     lines.append("source build/envsetup.sh")
-    if markers:
-        lines.append(_phase_printf("lunch"))
-    lines.append(f"lunch {shlex.quote(config.lunch_combo)} || exit $?")
+    if config.lunch:
+        if markers:
+            lines.append(_phase_printf("lunch"))
+        lines.append(f"lunch {shlex.quote(config.lunch_combo)} || exit $?")
+    else:
+        lines.append("set_sequence_number")
     if config.clean == "clean":
         if markers:
             lines.append(_phase_printf("clean"))

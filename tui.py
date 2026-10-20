@@ -139,6 +139,7 @@ class BuildTui:
         self._scroll_owner = self.build
         self._scroll_attr = "log_scroll"
         self._overlay_open = False
+        self.is_need_lunch = True
 
     def make_ctx(self) -> Ctx:
         return Ctx(self)
@@ -579,8 +580,14 @@ class BuildTui:
         )
 
     def _persist_if_changed(self, before: tuple) -> None:
-        if self._prefs_snapshot() != before:
-            self._persist()
+        now = self._prefs_snapshot()
+        if now == before:
+            return
+        self._persist()
+        now_device, *_ = now
+        before_device, *_ = before
+        if now_device != before_device:
+            self.is_need_lunch = True
 
     def _persist(self) -> None:
         save_prefs(
