@@ -69,7 +69,7 @@ from ui.term import (
     wrap_words,
 )
 
-TUI_VERSION = "1.4.1"
+TUI_VERSION = "1.5.0"
 
 TAB_BUILD = "build"
 TAB_SCM = "scm"
