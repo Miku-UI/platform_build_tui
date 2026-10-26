@@ -40,6 +40,7 @@ from pages.build import (
     CLEAN_NONE,
     BuildPage,
 )
+from pages.patchset import PatchsetPage
 from pages.scm import ScmPage
 from core.prefs import Prefs, load_prefs, save_prefs
 from core.session import (
@@ -73,8 +74,9 @@ TUI_VERSION = "1.5.0"
 
 TAB_BUILD = "build"
 TAB_SCM = "scm"
+TAB_PATCHSET = "patchset"
 TAB_ABOUT = "about"
-TABS = (TAB_BUILD, TAB_SCM, TAB_ABOUT)
+TABS = (TAB_BUILD, TAB_SCM, TAB_PATCHSET, TAB_ABOUT)
 
 VOICE_MOE = "moe"
 VOICE_PRO = "pro"
@@ -105,16 +107,21 @@ class BuildTui:
         prefs = load_prefs(top)
         self.build = BuildPage(top, products, release, jobs, gapps, ccache, clean, variant, prefs)
         self.scm = ScmPage(top, prefs.git_transport, prefs.check_jobs)
+        self.patchset = PatchsetPage(top, prefs.patchset_enabled, prefs.patchset_known)
         self.about = AboutPage(TUI_VERSION)
         self._pages: dict[str, Page] = {
             TAB_BUILD: self.build,
             TAB_SCM: self.scm,
+            TAB_PATCHSET: self.patchset,
             TAB_ABOUT: self.about,
         }
         self.tab = TAB_BUILD
         self.hits: list[Hit] = []
         self.lang = prefs.lang or detect_lang()
         self.voice = prefs.voice or VOICE_PRO
+        if self.patchset.settle():
+            self.patchset.prefs_dirty = False
+            self._persist()
         self._btn_down = False
         self._btn_hit: tuple[str, object] | None = None
         self._click_guard: tuple[float, str, object] = (0.0, "", None)
@@ -299,6 +306,13 @@ class BuildTui:
         left, _gap, cy, cx, ch, cw = _panel_geom(rows, cols)
         self.host.tick()
         self._draw_banner(stdscr, rows, left)
+        if self.tab == TAB_PATCHSET:
+            self.patchset.note_shown()
+        else:
+            self.patchset.note_hidden()
+        if self.patchset.prefs_dirty:
+            self.patchset.prefs_dirty = False
+            self._persist()
         ctx = self.make_ctx()
         page.draw(ctx, stdscr, cy, cx, ch, cw)
         self._draw_tab_bar(stdscr, cy, cx, cw)
@@ -419,16 +433,19 @@ class BuildTui:
     def _draw_tab_bar(self, stdscr: curses.window, y: int, x: int, w: int) -> None:
         xx = x + 2
         inner = max(10, w - 4)
+        padded = [(tab, f" {self._t(f'tab_{tab}')} ") for tab in TABS]
+        gap = 1
+        if sum(dw(label) for _tab, label in padded) + gap * (len(padded) - 1) > inner:
+            padded = [(tab, self._t(f"tab_{tab}")) for tab in TABS]
         cx = xx
-        for tab in TABS:
-            label = f" {self._t(f'tab_{tab}')} "
+        for tab, label in padded:
             tw = dw(label)
             if cx + tw - xx > inner:
                 break
             attr = curses.color_pair(3) | curses.A_BOLD if tab == self.tab else curses.color_pair(10)
             _add(stdscr, y + 1, cx, label, attr, tw)
             self.hits.append(Hit(Rect(y + 1, cx, 1, tw), "tab", tab))
-            cx += tw + 1
+            cx += tw + gap
 
     def _close_page(self) -> None:
         before = self._prefs_snapshot()
@@ -577,6 +594,9 @@ class BuildTui:
             self.build.mem_limit,
             self.build.env_vars,
             self.build.mark_upgrade,
+            self.build.apply_patchsets,
+            tuple(sorted(self.patchset.enabled)),
+            tuple(sorted(self.patchset.known)),
         )
 
     def _persist_if_changed(self, before: tuple) -> None:
@@ -606,6 +626,9 @@ class BuildTui:
                 mem_limit=self.build.mem_limit,
                 env_vars=self.build.env_vars,
                 mark_upgrade=self.build.mark_upgrade,
+                apply_patchsets=self.build.apply_patchsets,
+                patchset_enabled=tuple(sorted(self.patchset.enabled)),
+                patchset_known=tuple(sorted(self.patchset.known)),
             ),
         )
 

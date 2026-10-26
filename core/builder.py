@@ -18,6 +18,7 @@ import fcntl
 import json
 import os
 import pty
+import pwd
 import re
 import secrets
 import select
@@ -35,6 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.devices import Product
+from core.patchset import cleanup_run, wrap_overlay
 from core.phase import MARKER_PREFIX
 
 MAKE_TARGET = "diva"
@@ -170,6 +172,7 @@ class BuildConfig:
     mark_upgrade: bool = False
     build_number: str = ""
     lunch: bool = True
+    patch_plan: tuple[tuple[str, str], ...] = ()
 
     @property
     def lunch_combo(self) -> str:
@@ -195,6 +198,7 @@ class BuildSession:
         self.started_at = 0.0
         self.finished_at = 0.0
         self.stopped = False
+        self._overlay_dir: Path | None = None
 
     @property
     def running(self) -> bool:
@@ -215,7 +219,19 @@ class BuildSession:
         high = memory_high_spec(self.config.mem_limit)
         if high:
             argv = _scope_argv(argv, high)
+        overlay_dir: Path | None = None
+        if self.config.patch_plan:
+            argv, overlay_dir = wrap_overlay(self.top, self.config.patch_plan, argv)
+            self._overlay_dir = overlay_dir
         self.started_at = time.time()
+        try:
+            self._spawn(argv, env)
+        except Exception:
+            cleanup_run(overlay_dir)
+            self._overlay_dir = None
+            raise
+
+    def _spawn(self, argv: list[str], env: dict[str, str]) -> None:
         if self.inherit_tty:
             self.proc = subprocess.Popen(argv, cwd=self.top, env=env, start_new_session=True)
             return
@@ -258,6 +274,8 @@ class BuildSession:
         reader = self._reader
         if reader is not None and reader is not threading.current_thread():
             reader.join(timeout=0.2)
+        cleanup_run(self._overlay_dir)
+        self._overlay_dir = None
 
     def wait(self) -> int:
         if self.proc is None:
@@ -460,7 +478,22 @@ def _build_env(config: BuildConfig, top: Path) -> dict[str, str]:
             env[key] = val
     if config.mark_upgrade and config.build_number:
         env["BUILD_NUMBER"] = config.build_number
+    # Soong uses the process uid when this is unset. The patchset mount
+    # namespace is uid 0, which would record root.
+    explicit_username = any(sanitize_env_name(name) == "BUILD_USERNAME" for name, _ in config.env_vars)
+    host_user = _host_username()
+    if host_user and not explicit_username:
+        current = env.get("BUILD_USERNAME")
+        if not current or (current == "root" and host_user != "root"):
+            env["BUILD_USERNAME"] = host_user
     return env
+
+
+def _host_username() -> str | None:
+    try:
+        return pwd.getpwuid(os.getuid()).pw_name
+    except KeyError:
+        return None
 
 
 def _phase_printf(name: str) -> str:

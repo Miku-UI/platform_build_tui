@@ -177,6 +177,16 @@ class Ctx:
         self._sh._persist_if_changed(before)
 
     @property
+    def lang(self) -> str:
+        return self._sh.lang
+
+    def patchset_enabled(self) -> tuple[str, ...]:
+        if self._sh.patchset.settle():
+            self._sh.patchset.prefs_dirty = False
+            self._sh._persist()
+        return tuple(sorted(self._sh.patchset.enabled))
+
+    @property
     def is_need_lunch(self) -> bool:
         return self._sh.is_need_lunch
 

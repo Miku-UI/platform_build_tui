@@ -22,6 +22,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from core.patchset import prepare
 from core.builder import (
     CUSTOM_TARGET_MAX,
     ENV_NAME_MAX,
@@ -92,6 +93,7 @@ _FOCUS_INNER = (
     "mem_limit",
     "ccache",
     "keep_going",
+    "apply_patchsets",
     "env_vars",
 )
 _CUSTOM_FOCUS_INPUT = 0
@@ -162,6 +164,7 @@ class BuildPage(Page):
             self.ccache = shutil.which("ccache") is not None
         self.keep_going = prefs.keep_going if prefs.keep_going is not None else False
         self.mark_upgrade = prefs.mark_upgrade if prefs.mark_upgrade is not None else False
+        self.apply_patchsets = prefs.apply_patchsets if prefs.apply_patchsets is not None else True
         self.env_vars = prefs.env_vars
         self.target_kind = TARGET_OTA
         self.custom_target = ""
@@ -429,6 +432,18 @@ class BuildPage(Page):
                     self.keep_going,
                     "keep_going",
                 )
+                row = option_block(
+                    stdscr,
+                    hits,
+                    row,
+                    xx,
+                    inner,
+                    None,
+                    ctx.t("apply_patchsets"),
+                    yn,
+                    self.apply_patchsets,
+                    "apply_patchsets",
+                )
                 _add(stdscr, row, xx, ctx.t("env_vars"), curses.color_pair(15) | curses.A_DIM, inner)
                 row += 1
                 chip_row(
@@ -610,6 +625,8 @@ class BuildPage(Page):
             extras.append(self.clean)
         if self.mark_upgrade:
             extras.append("upgrade")
+        if self.apply_patchsets:
+            extras.append("patchset")
         tag = mem_limit_tag(self._shown_mem_limit())
         if tag:
             extras.append(tag)
@@ -765,6 +782,8 @@ class BuildPage(Page):
             self.ccache = _cycle((True, False), self.ccache, ch)
         elif name == "keep_going":
             self.keep_going = _cycle((True, False), self.keep_going, ch)
+        elif name == "apply_patchsets":
+            self.apply_patchsets = _cycle((True, False), self.apply_patchsets, ch)
         elif name == "env_vars" and ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
             self._open_env_dialog()
         elif name == "clean":
@@ -866,6 +885,8 @@ class BuildPage(Page):
                 self._confirm_mem_limit()
             elif payload == "cancel":
                 self._cancel_mem_limit()
+            elif payload == "patchset_dismiss":
+                self.dialog = None
             return True
         if action == "focus" and isinstance(payload, str) and payload in self._focus_names():
             self.set_focus(payload)
@@ -892,6 +913,11 @@ class BuildPage(Page):
             self.set_focus("keep_going")
             if isinstance(payload, bool):
                 self.keep_going = payload
+            return True
+        if action == "apply_patchsets":
+            self.set_focus("apply_patchsets")
+            if isinstance(payload, bool):
+                self.apply_patchsets = payload
             return True
         if action == "env_edit":
             self.set_focus("env_vars")
@@ -1300,6 +1326,16 @@ class BuildPage(Page):
         if self.target_kind == TARGET_CUSTOM and not sanitize_make_targets(self.custom_target):
             self._open_custom_dialog()
             return
+        plan: tuple[tuple[str, str], ...] = ()
+        if self.apply_patchsets:
+            plan, blocked = prepare(self.top, ctx.patchset_enabled())
+            if blocked:
+                self.dialog = Dialog(
+                    title_key="patchset_conflict_title",
+                    body_key="patchset_conflict_body",
+                    choices=(("patchset_dismiss", "confirm"),),
+                )
+                return
         log = LogBuffer()
         phase = PhaseTracker()
         self.log = log
@@ -1329,6 +1365,7 @@ class BuildPage(Page):
             mark_upgrade=self.mark_upgrade,
             build_number=make_upgrade_build_number() if self.mark_upgrade else "",
             lunch=need_lunch,
+            patch_plan=plan,
         )
 
         def on_data(text: str, buf: LogBuffer = log, tracker: PhaseTracker = phase) -> None:
@@ -1340,10 +1377,16 @@ class BuildPage(Page):
         self.mode = MODE_BUILD
         try:
             session.start()
-        except FileNotFoundError:
+        except FileNotFoundError as exc:
             self.session = None
             self.mode = MODE_CONFIG
-            self.set_status("mem_limit_no_systemd")
+            missing = exc.filename or (exc.args[0] if exc.args else "")
+            if missing == "unshare":
+                self.set_status("patchset_no_unshare")
+            elif missing == "/dev/shm":
+                self.set_status("patchset_no_shm")
+            else:
+                self.set_status("mem_limit_no_systemd")
         else:
             ctx.is_need_lunch = False
         rows, cols = ctx.stdscr.getmaxyx() if ctx.stdscr is not None else (24, 80)

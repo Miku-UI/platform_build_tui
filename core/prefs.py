@@ -44,6 +44,19 @@ class Prefs:
     mem_limit: str | None = None
     env_vars: tuple[tuple[str, str], ...] = ()
     mark_upgrade: bool | None = None
+    apply_patchsets: bool | None = None
+    patchset_enabled: tuple[str, ...] = ()
+    patchset_known: tuple[str, ...] = ()
+
+
+def _patchset_names(raw: object) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    names: list[str] = []
+    for item in raw:
+        if isinstance(item, str) and item.strip() and "/" not in item and "\\" not in item:
+            names.append(item.strip())
+    return names
 
 
 def tui_dir(top: Path, *, create: bool = False) -> Path:
@@ -77,6 +90,9 @@ def load_prefs(top: Path) -> Prefs:
     check_jobs = raw.get("check_jobs")
     mem_limit = raw.get("mem_limit")
     mark_upgrade = raw.get("mark_upgrade")
+    apply_patchsets = raw.get("apply_patchsets")
+    enabled = _patchset_names(raw.get("patchset_enabled"))
+    known = _patchset_names(raw.get("patchset_known"))
     return Prefs(
         device=device.strip() if isinstance(device, str) and device.strip() else None,
         variant=variant if variant in _VARIANTS else None,
@@ -91,6 +107,9 @@ def load_prefs(top: Path) -> Prefs:
         mem_limit=mem_limit if mem_limit in MEM_LIMIT_KINDS else None,
         env_vars=sanitize_env_vars(raw.get("env_vars")),
         mark_upgrade=mark_upgrade if isinstance(mark_upgrade, bool) else None,
+        apply_patchsets=apply_patchsets if isinstance(apply_patchsets, bool) else None,
+        patchset_enabled=tuple(dict.fromkeys(enabled)),
+        patchset_known=tuple(dict.fromkeys(known)),
     )
 
 
@@ -122,6 +141,12 @@ def save_prefs(top: Path, prefs: Prefs) -> None:
         data["env_vars"] = [{"name": name, "value": value} for name, value in prefs.env_vars]
     if isinstance(prefs.mark_upgrade, bool):
         data["mark_upgrade"] = prefs.mark_upgrade
+    if isinstance(prefs.apply_patchsets, bool):
+        data["apply_patchsets"] = prefs.apply_patchsets
+    if prefs.patchset_enabled:
+        data["patchset_enabled"] = list(prefs.patchset_enabled)
+    if prefs.patchset_known:
+        data["patchset_known"] = list(prefs.patchset_known)
     tui_dir(top, create=True)
     path = prefs_path(top)
     tmp = path.with_name(path.name + ".tmp")

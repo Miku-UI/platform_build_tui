@@ -19,6 +19,7 @@ import argparse
 import os
 import shutil
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 _TUI_DIR = Path(__file__).resolve().parent
@@ -26,6 +27,8 @@ if str(_TUI_DIR) not in sys.path:
     sys.path.insert(0, str(_TUI_DIR))
 
 from core.builder import BuildConfig, default_make_target, run_cli  # noqa: E402
+from core.patchset import apply_defaults, prepare  # noqa: E402
+from core.prefs import load_prefs, save_prefs  # noqa: E402
 from core.devices import android_top_from, default_release, discover_products, resolve_device  # noqa: E402
 from ui.i18n import detect_lang, t  # noqa: E402
 from tui import CLEAN_FULL, CLEAN_INSTALL, CLEAN_NONE, run_tui  # noqa: E402
@@ -50,6 +53,18 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         jobs = args.jobs if args.jobs is not None else max(1, os.cpu_count() or 4)
         ccache = shutil.which("ccache") is not None if args.ccache is None else args.ccache
+        prefs = load_prefs(top)
+        enabled, known, changed = apply_defaults(top, prefs.patchset_enabled, prefs.patchset_known)
+        if changed:
+            prefs = replace(prefs, patchset_enabled=enabled, patchset_known=known)
+            save_prefs(top, prefs)
+        apply_patchsets = True if prefs.apply_patchsets is None else prefs.apply_patchsets
+        plan: tuple[tuple[str, str], ...] = ()
+        if apply_patchsets:
+            plan, blocked = prepare(top, enabled)
+            if blocked:
+                print(t(detect_lang(), "patchset_conflict_body"), file=sys.stderr)
+                return 2
         config = BuildConfig(
             product=product,
             jobs=jobs,
@@ -60,6 +75,7 @@ def main(argv: list[str] | None = None) -> int:
             variant=args.variant or "userdebug",
             make_target=default_make_target(product),
             show_sha256=not product.is_gsi,
+            patch_plan=plan,
         )
         extras = []
         if config.gapps:
